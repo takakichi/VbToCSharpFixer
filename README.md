@@ -2,6 +2,8 @@
 
 .NET 8 / Roslyn の `SyntaxTree`、`SemanticModel`、シンボル情報を使う、保守的な VB.NET → C# 変換補正 CLI です。メソッド、配列、既定/Item プロパティを名前ではなく解決済みシンボルから区別します。判定不能または未対応構文は `ManualReviewRequired` に記録します。
 
+このコードは、Codexを使って作成しています。そのため現時点では正しい動作をするかどうか保証はできません。
+
 ```powershell
 dotnet run --project src/VbToCSharpFixer -- --solution C:\src\App.sln --output C:\out
 dotnet run --project src/VbToCSharpFixer -- --project C:\src\App.vbproj --output C:\out --dry-run
