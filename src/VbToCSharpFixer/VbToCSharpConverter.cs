@@ -20,7 +20,7 @@ public sealed class VbToCSharpConverter
     private string _file = "";
     private int _indent;
 
-    public ConversionResult Convert(SyntaxTree tree, SemanticModel model, string projectName)
+    public ConversionResult Convert(SyntaxTree tree, SemanticModel model, string projectName, string? rootNamespace = null)
     {
         _fixes.Clear();
         _reviews.Clear();
@@ -34,7 +34,18 @@ public sealed class VbToCSharpConverter
             foreach (var clause in import.ImportsClauses)
                 output.Append("using ").Append(clause).AppendLine(";");
         if (root.Imports.Count > 0) output.AppendLine();
-        foreach (var member in root.Members) WriteStatement(member, output);
+        var globalMembers = root.Members.Where(IsGlobalNamespace).ToArray();
+        var rootedMembers = root.Members.Where(x => !IsGlobalNamespace(x)).ToArray();
+        if (!string.IsNullOrWhiteSpace(rootNamespace) && rootedMembers.Length > 0)
+        {
+            Line(output, $"namespace {rootNamespace}");
+            Block(output, () => { foreach (var member in rootedMembers) WriteStatement(member, output); });
+        }
+        else
+        {
+            foreach (var member in rootedMembers) WriteStatement(member, output);
+        }
+        foreach (var member in globalMembers) WriteStatement(member, output);
         return new(output.ToString(), _fixes.ToArray(), _reviews.ToArray());
     }
 
@@ -54,7 +65,10 @@ public sealed class VbToCSharpConverter
         switch (statement)
         {
             case NamespaceBlockSyntax n:
-                Line(output, $"namespace {n.NamespaceStatement.Name}");
+                var namespaceName = n.NamespaceStatement.Name.ToString();
+                if (namespaceName.StartsWith("Global.", StringComparison.OrdinalIgnoreCase))
+                    namespaceName = namespaceName["Global.".Length..];
+                Line(output, $"namespace {namespaceName}");
                 Block(output, () => { foreach (var m in n.Members) WriteStatement(m, output); });
                 break;
             case ClassBlockSyntax c:
@@ -385,6 +399,10 @@ public sealed class VbToCSharpConverter
 
     private void Line(StringBuilder output, string value) => output.Append(' ', _indent * 4).AppendLine(value);
     private static string OneLine(string value) => value.Replace("\r", " ").Replace("\n", " ").Trim();
+
+    private static bool IsGlobalNamespace(StatementSyntax statement) =>
+        statement is NamespaceBlockSyntax block &&
+        block.NamespaceStatement.Name.ToString().StartsWith("Global.", StringComparison.OrdinalIgnoreCase);
 }
 
 internal static class SyntaxExtensions

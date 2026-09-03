@@ -21,9 +21,16 @@ public sealed class WorkspaceLoader : IDisposable
             var workspace = MSBuildWorkspace.Create();
             var loader = new WorkspaceLoader(workspace);
             workspace.WorkspaceFailed += (_, e) => loader.Diagnostics.Add(e.Diagnostic.Message);
-            var projects = options.Solution is not null
-                ? (await workspace.OpenSolutionAsync(options.Solution, cancellationToken: cancellationToken)).Projects
-                : [await workspace.OpenProjectAsync(options.Project!, cancellationToken: cancellationToken)];
+            IEnumerable<Project> projects;
+            if (options.Solution is not null)
+            {
+                projects = (await workspace.OpenSolutionAsync(options.Solution, cancellationToken: cancellationToken)).Projects;
+            }
+            else
+            {
+                var rootProject = await workspace.OpenProjectAsync(options.Project!, cancellationToken: cancellationToken);
+                projects = ReferencedProjectClosure(rootProject);
+            }
             return (loader, await CompileVisualBasicProjects(projects, cancellationToken));
         }
 
@@ -43,6 +50,26 @@ public sealed class WorkspaceLoader : IDisposable
         var project = solution.GetProject(projectId)!;
         var compilation = (await project.GetCompilationAsync(cancellationToken))!;
         return (new WorkspaceLoader(null), [new LoadedProject(project, compilation)]);
+    }
+
+    private static IReadOnlyList<Project> ReferencedProjectClosure(Project root)
+    {
+        var result = new List<Project>();
+        var pending = new Stack<Project>();
+        var visited = new HashSet<ProjectId>();
+        pending.Push(root);
+        while (pending.Count > 0)
+        {
+            var project = pending.Pop();
+            if (!visited.Add(project.Id)) continue;
+            result.Add(project);
+            foreach (var reference in project.ProjectReferences)
+            {
+                var referenced = project.Solution.GetProject(reference.ProjectId);
+                if (referenced is not null) pending.Push(referenced);
+            }
+        }
+        return result;
     }
 
     private static void RegisterMsBuild()

@@ -15,8 +15,12 @@ public static class Program
             {
                 var fixes = new List<FixResult>();
                 var reviews = new List<ManualReviewItem>();
+                var materialization = await new LegacyProjectMaterializer().MaterializeAsync(options, projects);
+                reviews.AddRange(materialization.ManualReviews);
+                var layout = new OutputLayout(options);
                 var converter = new VbToCSharpConverter();
                 var validation = new ValidationService();
+                var projectOperations = materialization.ProjectOperations.ToList();
                 var fileCount = 0;
                 foreach (var loaded in projects)
                 {
@@ -29,9 +33,11 @@ public static class Program
                         if (tree is null) continue;
                         fileCount++;
                         var model = loaded.Compilation.GetSemanticModel(tree, ignoreAccessibility: true);
-                        var result = converter.Convert(tree, model, loaded.Project.Name);
-                        var relative = RelativeSourcePath(loaded.Project, document);
-                        var destination = Path.Combine(options.Output, "converted", SafeName(loaded.Project.Name), Path.ChangeExtension(relative, ".cs"));
+                        var rootNamespace = (loaded.Compilation.Options as Microsoft.CodeAnalysis.VisualBasic.VisualBasicCompilationOptions)?.RootNamespace;
+                        var result = converter.Convert(tree, model, loaded.Project.Name, rootNamespace);
+                        var destination = document.FilePath is null
+                            ? layout.PathInProject(loaded.Project, Path.ChangeExtension(document.Name, ".cs"))
+                            : layout.SourceDestination(loaded.Project, document.FilePath);
                         convertedSources.Add((result.CSharp, destination));
                         fixes.AddRange(result.Fixes);
                         reviews.AddRange(result.ManualReviews);
@@ -64,7 +70,13 @@ public static class Program
                             "Generated C# compilation: " + diagnostic));
                     }
                 }
-                await ConversionLogger.WriteAsync(options.Output, fixes, reviews, loader.Diagnostics, fileCount, options.DryRun);
+                var buildValidation = await new GeneratedBuildValidator().ValidateAsync(
+                    materialization.BuildTarget, options.SkipBuild, options.DryRun);
+                if (buildValidation.Log is not null) projectOperations.Add(buildValidation.Log);
+                if (buildValidation.Review is not null) reviews.Add(buildValidation.Review);
+                await ConversionLogger.WriteAsync(options.Output, fixes, reviews, loader.Diagnostics,
+                    materialization.FileOperations, projectOperations,
+                    fileCount, options.DryRun);
                 Console.WriteLine($"Processed {fileCount} file(s), {fixes.Count} semantic fix(es), {reviews.Count} manual review item(s).");
                 Console.WriteLine($"Output: {options.Output}");
                 return reviews.Count == 0 ? 0 : 2;
@@ -81,15 +93,6 @@ public static class Program
             return 1;
         }
     }
-
-    private static string RelativeSourcePath(Project project, Document document)
-    {
-        if (document.FilePath is null) return document.Name;
-        var root = project.FilePath is null ? null : Path.GetDirectoryName(project.FilePath);
-        return root is null ? document.Name : Path.GetRelativePath(root, document.FilePath);
-    }
-
-    private static string SafeName(string name) => string.Concat(name.Select(c => Path.GetInvalidFileNameChars().Contains(c) ? '_' : c));
 
     private static bool IsGeneratedBuildDocument(Project project, Document document)
     {

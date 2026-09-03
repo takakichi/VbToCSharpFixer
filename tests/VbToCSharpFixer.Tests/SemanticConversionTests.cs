@@ -187,6 +187,21 @@ End Class
     }
 
     [Test]
+    public void Applies_vb_root_namespace_but_honors_global_namespace()
+    {
+        var source = "Public Class Rooted\nEnd Class\nNamespace Global.External\nPublic Class Unrooted\nEnd Class\nEnd Namespace";
+        var tree = VisualBasicSyntaxTree.ParseText(source, path: "namespaces.vb");
+        var compilation = CreateCompilation(tree);
+        var result = new VbToCSharpConverter().Convert(tree, compilation.GetSemanticModel(tree), "Test", "Company.App");
+        Assert.Multiple(() =>
+        {
+            Assert.That(result.CSharp, Does.Contain("namespace Company.App"));
+            Assert.That(result.CSharp, Does.Contain("namespace External"));
+            Assert.That(result.CSharp, Does.Not.Contain("namespace Global.External"));
+        });
+    }
+
+    [Test]
     public void Semantic_model_resolves_symbol_from_project_reference()
     {
         var libraryTree = VisualBasicSyntaxTree.ParseText("Public Class CommonService\nPublic Function GetValue(i As Integer) As String\nReturn \"\"\nEnd Function\nEnd Class");
