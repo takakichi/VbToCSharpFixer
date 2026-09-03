@@ -202,6 +202,99 @@ End Class
     }
 
     [Test]
+    public void Uses_readable_visual_basic_runtime_type_names()
+    {
+        var source = """
+Imports Microsoft.VisualBasic
+Public Class RuntimeUsage
+    Public Function Run(text As String, value As Object) As String
+        Dim part = Mid(text, 2, 3)
+        Dim formatted = Format(value, "000")
+        Dim validDate = IsDate(value)
+        Dim nothingValue = IsNothing(value)
+        Return part
+    End Function
+End Class
+""";
+        var tree = VisualBasicSyntaxTree.ParseText(source, path: "runtime.vb");
+        var compilation = CreateCompilation(tree);
+        var result = new VbToCSharpConverter().Convert(tree, compilation.GetSemanticModel(tree), "Test");
+        Assert.Multiple(() =>
+        {
+            Assert.That(result.CSharp.Split("using Microsoft.VisualBasic;", StringSplitOptions.None).Length - 1, Is.EqualTo(1));
+            Assert.That(result.CSharp, Does.Contain("Strings.Mid(text, 2, 3)"));
+            Assert.That(result.CSharp, Does.Contain("Strings.Format(value, \"000\")"));
+            Assert.That(result.CSharp, Does.Contain("Information.IsDate(value)"));
+            Assert.That(result.CSharp, Does.Contain("Information.IsNothing(value)"));
+            Assert.That(result.CSharp, Does.Not.Contain("global::Microsoft.VisualBasic.Strings.Mid"));
+            Assert.That(result.VisualBasicRuntimeTypes, Has.Count.EqualTo(2));
+        });
+    }
+
+    [Test]
+    public void Adds_visual_basic_using_for_project_level_global_import()
+    {
+        var source = "Public Class RuntimeUsage\nPublic Function Run(text As String) As String\nReturn Mid(text, 1, 1)\nEnd Function\nEnd Class";
+        var tree = VisualBasicSyntaxTree.ParseText(source, path: "global-import.vb");
+        var compilation = VisualBasicCompilation.Create("GlobalImport", [tree], PlatformReferences(),
+            new VisualBasicCompilationOptions(OutputKind.DynamicallyLinkedLibrary,
+                globalImports: [GlobalImport.Parse("Microsoft.VisualBasic")]));
+        var result = new VbToCSharpConverter().Convert(tree, compilation.GetSemanticModel(tree), "Test");
+        Assert.Multiple(() =>
+        {
+            Assert.That(result.CSharp, Does.StartWith("using Microsoft.VisualBasic;"));
+            Assert.That(result.CSharp, Does.Contain("Strings.Mid(text, 1, 1)"));
+        });
+    }
+
+    [Test]
+    public void Uses_alias_when_visual_basic_runtime_type_name_collides()
+    {
+        var source = """
+Imports Microsoft.VisualBasic
+Public Class Strings
+End Class
+Public Class RuntimeUsage
+    Public Function Run(text As String) As String
+        Return Mid(text, 2, 3)
+    End Function
+End Class
+""";
+        var tree = VisualBasicSyntaxTree.ParseText(source, path: "runtime-collision.vb");
+        var compilation = CreateCompilation(tree);
+        var result = new VbToCSharpConverter().Convert(tree, compilation.GetSemanticModel(tree), "Test");
+        Assert.Multiple(() =>
+        {
+            Assert.That(result.CSharp, Does.Contain("using VBStrings = global::Microsoft.VisualBasic.Strings;"));
+            Assert.That(result.CSharp, Does.Contain("VBStrings.Mid(text, 2, 3)"));
+        });
+    }
+
+    [Test]
+    public void Does_not_rewrite_user_defined_legacy_function_name()
+    {
+        var source = """
+Public Class RuntimeUsage
+    Public Function Mid(text As String, start As Integer) As String
+        Return text
+    End Function
+    Public Function Run(text As String) As String
+        Return Mid(text, 2)
+    End Function
+End Class
+""";
+        var tree = VisualBasicSyntaxTree.ParseText(source, path: "custom-mid.vb");
+        var compilation = CreateCompilation(tree);
+        var result = new VbToCSharpConverter().Convert(tree, compilation.GetSemanticModel(tree), "Test");
+        Assert.Multiple(() =>
+        {
+            Assert.That(result.CSharp, Does.Contain("return Mid(text, 2);"));
+            Assert.That(result.CSharp, Does.Not.Contain("using Microsoft.VisualBasic;"));
+            Assert.That(result.VisualBasicRuntimeTypes, Is.Empty);
+        });
+    }
+
+    [Test]
     public void Semantic_model_resolves_symbol_from_project_reference()
     {
         var libraryTree = VisualBasicSyntaxTree.ParseText("Public Class CommonService\nPublic Function GetValue(i As Integer) As String\nReturn \"\"\nEnd Function\nEnd Class");

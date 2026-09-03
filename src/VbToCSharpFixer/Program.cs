@@ -25,6 +25,7 @@ public static class Program
                 foreach (var loaded in projects)
                 {
                     var convertedSources = new List<(string Source, string Path)>();
+                    var visualBasicRuntimeTypes = new HashSet<string>(StringComparer.Ordinal);
                     var compilationErrors = loaded.Compilation.GetDiagnostics()
                         .Where(d => d.Severity == DiagnosticSeverity.Error).ToArray();
                     foreach (var document in loaded.Project.Documents.Where(d => !IsGeneratedBuildDocument(loaded.Project, d)))
@@ -41,6 +42,7 @@ public static class Program
                         convertedSources.Add((result.CSharp, destination));
                         fixes.AddRange(result.Fixes);
                         reviews.AddRange(result.ManualReviews);
+                        visualBasicRuntimeTypes.UnionWith(result.VisualBasicRuntimeTypes);
                         foreach (var diagnostic in compilationErrors.Where(d => d.Location.SourceTree == tree))
                         {
                             var p = diagnostic.Location.GetLineSpan().StartLinePosition;
@@ -68,6 +70,12 @@ public static class Program
                         reviews.Add(new(loaded.Project.Name, p.Path, p.StartLinePosition.Line + 1,
                             p.StartLinePosition.Character + 1, "", ReasonCode.CompilationError,
                             "Generated C# compilation: " + diagnostic));
+                    }
+                    if (materialization.ProjectOutputDirectories.TryGetValue(loaded.Project.Id, out var projectOutputDirectory))
+                    {
+                        var referenceLog = await new VisualBasicRuntimeReferenceService().EnsureReferenceAsync(
+                            loaded.Project, projectOutputDirectory, visualBasicRuntimeTypes.Count > 0, options.DryRun);
+                        if (referenceLog is not null) projectOperations.Add(referenceLog);
                     }
                 }
                 var buildValidation = await new GeneratedBuildValidator().ValidateAsync(

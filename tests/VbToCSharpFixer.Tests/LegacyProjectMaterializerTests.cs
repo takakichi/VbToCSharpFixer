@@ -49,6 +49,8 @@ public sealed class LegacyProjectMaterializerTests
         var result = await new LegacyProjectMaterializer().MaterializeAsync(options, [loaded]);
 
         var projectOutput = Path.Combine(output, "converted", "LegacyApp");
+        var referenceLog = await new VisualBasicRuntimeReferenceService().EnsureReferenceAsync(
+            loaded.Project, projectOutput, required: true, dryRun: false);
         var csprojPath = Path.Combine(projectOutput, "LegacyApp.csproj");
         Assert.That(File.Exists(csprojPath), Is.True);
         var xml = XDocument.Load(csprojPath);
@@ -61,6 +63,7 @@ public sealed class LegacyProjectMaterializerTests
             Assert.That(values.Any(x => x.Name == "Compile" && x.Include == "Form1.Designer.cs"), Is.True);
             Assert.That(values.Any(x => x.Name == "DependentUpon" && x.Value == "Form1.cs"), Is.True);
             Assert.That(values.Any(x => x.Name == "ProjectReference" && x.Include == "..\\Common\\Common.csproj"), Is.True);
+            Assert.That(values.Any(x => x.Name == "Reference" && x.Include == "Microsoft.VisualBasic"), Is.True);
             Assert.That(values.Any(x => x.Name == "Import" && x.Project?.Contains("Microsoft.CSharp.targets") == true), Is.True);
             Assert.That(values.Any(x => x.Name == "Generator" && x.Value == "ResXFileCodeGenerator"), Is.True);
             Assert.That(File.Exists(Path.Combine(projectOutput, "Form1.resx")), Is.True);
@@ -71,6 +74,7 @@ public sealed class LegacyProjectMaterializerTests
             Assert.That(File.Exists(Path.Combine(output, "converted", "_external", "LegacyApp", "External.dll")), Is.True);
             Assert.That(values.Any(x => x.Name == "HintPath" && x.Value == "..\\_external\\LegacyApp\\External.dll"), Is.True);
             Assert.That(result.FileOperations.Count(x => x.Result == "Copied"), Is.EqualTo(6));
+            Assert.That(referenceLog?.Result, Is.EqualTo("Success"));
         });
     }
 

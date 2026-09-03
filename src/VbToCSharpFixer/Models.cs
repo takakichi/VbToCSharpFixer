@@ -2,7 +2,7 @@ using Microsoft.CodeAnalysis;
 
 namespace VbToCSharpFixer;
 
-public enum FixType { MethodCall, ArrayAccess, Indexer, Property, Unchanged }
+public enum FixType { MethodCall, VbRuntimeCall, ArrayAccess, Indexer, Property, Unchanged }
 public enum ReasonCode
 {
     UnresolvedSymbol, MissingReference, AmbiguousSymbol, UnsupportedDefaultProperty,
@@ -24,7 +24,8 @@ public sealed record ManualReviewItem(
 
 public sealed record ConversionResult(
     string CSharp, IReadOnlyList<FixResult> Fixes,
-    IReadOnlyList<ManualReviewItem> ManualReviews);
+    IReadOnlyList<ManualReviewItem> ManualReviews,
+    IReadOnlyList<string> VisualBasicRuntimeTypes);
 
 public sealed record LoadedProject(Project Project, Compilation Compilation);
 

@@ -15,6 +15,10 @@ public sealed class VbToCSharpConverter
     private readonly SymbolClassifier _classifier = new();
     private readonly List<FixResult> _fixes = [];
     private readonly List<ManualReviewItem> _reviews = [];
+    private readonly HashSet<string> _visualBasicRuntimeTypes = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string> _runtimeAliases = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _sourceIdentifiers = new(StringComparer.OrdinalIgnoreCase);
+    private bool _needsVisualBasicUsing;
     private SemanticModel _model = null!;
     private string _project = "";
     private string _file = "";
@@ -24,29 +28,42 @@ public sealed class VbToCSharpConverter
     {
         _fixes.Clear();
         _reviews.Clear();
+        _visualBasicRuntimeTypes.Clear();
+        _runtimeAliases.Clear();
+        _sourceIdentifiers.Clear();
+        _needsVisualBasicUsing = false;
         _model = model;
         _project = projectName;
         _file = tree.FilePath;
         _indent = 0;
         var root = (CompilationUnitSyntax)tree.GetRoot();
-        var output = new StringBuilder();
-        foreach (var import in root.Imports)
-            foreach (var clause in import.ImportsClauses)
-                output.Append("using ").Append(clause).AppendLine(";");
-        if (root.Imports.Count > 0) output.AppendLine();
+        foreach (var token in root.DescendantTokens().Where(x => x.IsKind(VBSyntaxKind.IdentifierToken)))
+            _sourceIdentifiers.Add(token.ValueText);
+        var body = new StringBuilder();
         var globalMembers = root.Members.Where(IsGlobalNamespace).ToArray();
         var rootedMembers = root.Members.Where(x => !IsGlobalNamespace(x)).ToArray();
         if (!string.IsNullOrWhiteSpace(rootNamespace) && rootedMembers.Length > 0)
         {
-            Line(output, $"namespace {rootNamespace}");
-            Block(output, () => { foreach (var member in rootedMembers) WriteStatement(member, output); });
+            Line(body, $"namespace {rootNamespace}");
+            Block(body, () => { foreach (var member in rootedMembers) WriteStatement(member, body); });
         }
         else
         {
-            foreach (var member in rootedMembers) WriteStatement(member, output);
+            foreach (var member in rootedMembers) WriteStatement(member, body);
         }
-        foreach (var member in globalMembers) WriteStatement(member, output);
-        return new(output.ToString(), _fixes.ToArray(), _reviews.ToArray());
+        foreach (var member in globalMembers) WriteStatement(member, body);
+
+        var output = new StringBuilder();
+        var imports = root.Imports.SelectMany(x => x.ImportsClauses).Select(x => x.ToString()).ToList();
+        if (_needsVisualBasicUsing && !imports.Contains("Microsoft.VisualBasic", StringComparer.Ordinal))
+            imports.Add("Microsoft.VisualBasic");
+        foreach (var import in imports.Distinct(StringComparer.Ordinal))
+            output.Append("using ").Append(import).AppendLine(";");
+        foreach (var alias in _runtimeAliases.OrderBy(x => x.Value, StringComparer.Ordinal))
+            output.Append("using ").Append(alias.Value).Append(" = global::").Append(alias.Key).AppendLine(";");
+        if (imports.Count > 0 || _runtimeAliases.Count > 0) output.AppendLine();
+        output.Append(body);
+        return new(output.ToString(), _fixes.ToArray(), _reviews.ToArray(), _visualBasicRuntimeTypes.Order().ToArray());
     }
 
     public string ConvertExpression(ExpressionSyntax expression, SemanticModel model, string projectName = "Test")
@@ -56,6 +73,12 @@ public sealed class VbToCSharpConverter
         _file = expression.SyntaxTree.FilePath;
         _fixes.Clear();
         _reviews.Clear();
+        _visualBasicRuntimeTypes.Clear();
+        _runtimeAliases.Clear();
+        _sourceIdentifiers.Clear();
+        _needsVisualBasicUsing = false;
+        foreach (var token in expression.SyntaxTree.GetRoot().DescendantTokens().Where(x => x.IsKind(VBSyntaxKind.IdentifierToken)))
+            _sourceIdentifiers.Add(token.ValueText);
         return Expr(expression);
     }
 
@@ -236,8 +259,16 @@ public sealed class VbToCSharpConverter
         switch (classification.Meaning)
         {
             case ExpressionMeaning.Method:
-                after = $"{Expr(node.Expression, true)}({args})";
-                fixType = FixType.MethodCall;
+                if (classification.Symbol is IMethodSymbol method && IsVisualBasicRuntimeMethod(method))
+                {
+                    after = $"{VisualBasicRuntimeTypeAccess(method)}.{method.Name}({args})";
+                    fixType = FixType.VbRuntimeCall;
+                }
+                else
+                {
+                    after = $"{Expr(node.Expression, true)}({args})";
+                    fixType = FixType.MethodCall;
+                }
                 break;
             case ExpressionMeaning.Array:
                 after = $"{Expr(node.Expression, true)}[{args}]";
@@ -271,8 +302,10 @@ public sealed class VbToCSharpConverter
         var classification = _classifier.ClassifyExpression(node, _model);
         if (classification.Symbol is IMethodSymbol { Parameters.Length: 0 } && classification.Meaning == ExpressionMeaning.Method)
         {
-            var after = value + "()";
-            Record(node, FixType.MethodCall, after, classification);
+            var method = (IMethodSymbol)classification.Symbol;
+            var isRuntime = IsVisualBasicRuntimeMethod(method);
+            var after = isRuntime ? $"{VisualBasicRuntimeTypeAccess(method)}.{method.Name}()" : value + "()";
+            Record(node, isRuntime ? FixType.VbRuntimeCall : FixType.MethodCall, after, classification);
             return after;
         }
         return value;
@@ -285,8 +318,10 @@ public sealed class VbToCSharpConverter
         var classification = _classifier.ClassifyExpression(node, _model);
         if (classification.Symbol is IMethodSymbol { Parameters.Length: 0 })
         {
-            var after = name + "()";
-            Record(node, FixType.MethodCall, after, classification);
+            var method = (IMethodSymbol)classification.Symbol;
+            var isRuntime = IsVisualBasicRuntimeMethod(method);
+            var after = isRuntime ? $"{VisualBasicRuntimeTypeAccess(method)}.{method.Name}()" : name + "()";
+            Record(node, isRuntime ? FixType.VbRuntimeCall : FixType.MethodCall, after, classification);
             return after;
         }
         return name;
@@ -399,6 +434,34 @@ public sealed class VbToCSharpConverter
 
     private void Line(StringBuilder output, string value) => output.Append(' ', _indent * 4).AppendLine(value);
     private static string OneLine(string value) => value.Replace("\r", " ").Replace("\n", " ").Trim();
+
+    private static bool IsVisualBasicRuntimeMethod(IMethodSymbol method) =>
+        method.ContainingAssembly?.Identity.Name is { } assemblyName &&
+        (assemblyName.Equals("Microsoft.VisualBasic", StringComparison.OrdinalIgnoreCase) ||
+         assemblyName.Equals("Microsoft.VisualBasic.Core", StringComparison.OrdinalIgnoreCase)) &&
+        (method.ContainingNamespace?.ToDisplayString().Equals("Microsoft.VisualBasic", StringComparison.Ordinal) == true ||
+         method.ContainingNamespace?.ToDisplayString().StartsWith("Microsoft.VisualBasic.", StringComparison.Ordinal) == true);
+
+    private string VisualBasicRuntimeTypeAccess(IMethodSymbol method)
+    {
+        var fullType = method.ContainingType.ToDisplayString();
+        _visualBasicRuntimeTypes.Add(fullType);
+        var namespaceName = method.ContainingNamespace.ToDisplayString();
+        var directType = namespaceName.Equals("Microsoft.VisualBasic", StringComparison.Ordinal);
+        if (directType && !_sourceIdentifiers.Contains(method.ContainingType.Name))
+        {
+            _needsVisualBasicUsing = true;
+            return method.ContainingType.Name;
+        }
+
+        if (_runtimeAliases.TryGetValue(fullType, out var existing)) return existing;
+        var aliasBase = "VB" + method.ContainingType.Name;
+        var alias = aliasBase;
+        for (var suffix = 2; _sourceIdentifiers.Contains(alias) || _runtimeAliases.Values.Contains(alias, StringComparer.OrdinalIgnoreCase); suffix++)
+            alias = aliasBase + suffix;
+        _runtimeAliases.Add(fullType, alias);
+        return alias;
+    }
 
     private static bool IsGlobalNamespace(StatementSyntax statement) =>
         statement is NamespaceBlockSyntax block &&
