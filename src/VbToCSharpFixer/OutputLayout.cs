@@ -9,6 +9,7 @@ public sealed class OutputLayout
     public string OutputBase { get; }
     public string ConversionRoot { get; }
 
+    /// <summary>入力種別と出力先から変換成果物の基準ディレクトリを決定します。</summary>
     public OutputLayout(Options options)
     {
         _options = options;
@@ -21,6 +22,7 @@ public sealed class OutputLayout
         ConversionRoot = Path.Combine(OutputBase, SafeName(name));
     }
 
+    /// <summary>指定プロジェクトの出力ディレクトリを返します。</summary>
     public string ProjectDirectory(Project project)
     {
         if (project.FilePath is null) return Path.Combine(ConversionRoot, SafeName(project.Name));
@@ -36,6 +38,7 @@ public sealed class OutputLayout
         return SafeCombine(ConversionRoot, relative, project.Name);
     }
 
+    /// <summary>VBソースに対応するC#ソースの安全な出力パスを返します。</summary>
     public string SourceDestination(Project project, string sourcePath)
     {
         var sourceDirectory = project.FilePath is null ? null : Path.GetDirectoryName(project.FilePath);
@@ -44,9 +47,11 @@ public sealed class OutputLayout
         return SafeCombine(ProjectDirectory(project), relative, project.Name);
     }
 
+    /// <summary>プロジェクト相対パスを出力側の絶対パスへ変換します。</summary>
     public string PathInProject(Project project, string relativePath) =>
         SafeCombine(ProjectDirectory(project), LegacyProjectMaterializer.MapProjectPath(relativePath), project.Name);
 
+    /// <summary>出力領域外への逸脱を防ぎながらルートと相対パスを結合します。</summary>
     private string SafeCombine(string root, string relative, string project)
     {
         var fullRoot = Path.GetFullPath(root);
@@ -55,6 +60,7 @@ public sealed class OutputLayout
         return Path.Combine(OutputBase, "_external", SafeName(project), SafeName(Path.GetFileName(relative)));
     }
 
+    /// <summary>指定パスがルート自身またはルート配下に存在するか判定します。</summary>
     public static bool IsWithin(string root, string path)
     {
         var rootPath = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
@@ -63,6 +69,7 @@ public sealed class OutputLayout
                candidate.StartsWith(rootPath + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>ファイル名に利用できない文字を置換して安全な名前を返します。</summary>
     public static string SafeName(string name) =>
         string.Concat(name.Select(c => Path.GetInvalidFileNameChars().Contains(c) ? '_' : c));
 }

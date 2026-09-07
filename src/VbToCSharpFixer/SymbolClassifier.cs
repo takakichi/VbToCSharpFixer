@@ -9,6 +9,7 @@ public sealed record SymbolClassification(ExpressionMeaning Meaning, ISymbol? Sy
 
 public sealed class SymbolClassifier
 {
+    /// <summary>VBの呼び出し式をメソッド、配列、Indexerまたは未解決として分類します。</summary>
     public SymbolClassification ClassifyInvocation(InvocationExpressionSyntax node, SemanticModel model)
     {
         var info = model.GetSymbolInfo(node);
@@ -34,6 +35,7 @@ public sealed class SymbolClassifier
         return new(ExpressionMeaning.Unresolved, null, type, "SemanticModel could not resolve invocation");
     }
 
+    /// <summary>一般のVB式がメソッド、プロパティまたは値のどれに解決されるか分類します。</summary>
     public SymbolClassification ClassifyExpression(ExpressionSyntax node, SemanticModel model)
     {
         var info = model.GetSymbolInfo(node);
@@ -48,6 +50,7 @@ public sealed class SymbolClassifier
             : new(ExpressionMeaning.Unresolved, null, model.GetTypeInfo(node).Type, "SemanticModel could not resolve expression");
     }
 
+    /// <summary>プロパティの引数とIndexer属性から通常プロパティかIndexerかを判定します。</summary>
     private static SymbolClassification ClassifyProperty(IPropertySymbol property)
     {
         var isIndexer = property.IsIndexer || property.Parameters.Length > 0;

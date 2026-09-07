@@ -2,7 +2,7 @@ using Microsoft.CodeAnalysis;
 
 namespace VbToCSharpFixer;
 
-public enum FixType { MethodCall, VbRuntimeCall, ArrayAccess, Indexer, Property, Unchanged }
+public enum FixType { MethodCall, VbRuntimeCall, ArrayAccess, Indexer, Property, Unchanged, VbRuntimeMember }
 public enum ReasonCode
 {
     UnresolvedSymbol, MissingReference, AmbiguousSymbol, UnsupportedDefaultProperty,
@@ -48,6 +48,7 @@ public sealed record Options(
     string? Solution, string? Project, string? Folder, string? File,
     string Output, bool DryRun, bool Verbose, bool SkipBuild = false)
 {
+    /// <summary>コマンドライン引数を検証して実行オプションへ変換します。</summary>
     public static Options Parse(string[] args)
     {
         string? solution = null, project = null, folder = null, file = null, output = null;
@@ -76,6 +77,7 @@ public sealed record Options(
         return new(solution, project, folder, file, Path.GetFullPath(output), dryRun, verbose, skipBuild);
     }
 
+    /// <summary>値を必要とするオプションの次の引数を絶対パスとして取得します。</summary>
     private static string Next(string[] args, ref int i) =>
         ++i < args.Length ? Path.GetFullPath(args[i]) : throw new ArgumentException(Usage);
 

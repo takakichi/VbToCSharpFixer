@@ -4,6 +4,7 @@ namespace VbToCSharpFixer;
 
 public static class Program
 {
+    /// <summary>入力の解析、変換、構成出力、検証およびログ生成を統括します。</summary>
     public static async Task<int> Main(string[] args)
     {
         try
@@ -102,6 +103,7 @@ public static class Program
         }
     }
 
+    /// <summary>MSBuildがobj配下へ生成したドキュメントを出力対象から除外します。</summary>
     private static bool IsGeneratedBuildDocument(Project project, Document document)
     {
         if (document.FilePath is null || project.FilePath is null) return false;

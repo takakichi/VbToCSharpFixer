@@ -4,6 +4,7 @@ namespace VbToCSharpFixer;
 
 public sealed class GeneratedBuildValidator
 {
+    /// <summary>生成されたSolutionまたはProjectをdotnet msbuildでビルドして結果を返します。</summary>
     public async Task<(ProjectConversionLogEntry? Log, ManualReviewItem? Review)> ValidateAsync(
         string? target, bool skipBuild, bool dryRun, CancellationToken cancellationToken = default)
     {
@@ -49,6 +50,7 @@ public sealed class GeneratedBuildValidator
         }
     }
 
+    /// <summary>MSBuild出力をログへ格納できる長さの単一行に整形します。</summary>
     private static string OneLine(string value)
     {
         var line = value.Replace('\r', ' ').Replace('\n', ' ').Trim();

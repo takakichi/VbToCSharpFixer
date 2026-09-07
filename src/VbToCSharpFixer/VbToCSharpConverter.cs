@@ -24,6 +24,7 @@ public sealed class VbToCSharpConverter
     private string _file = "";
     private int _indent;
 
+    /// <summary>VB SyntaxTree全体を意味解析結果に基づいてC#ソースへ変換します。</summary>
     public ConversionResult Convert(SyntaxTree tree, SemanticModel model, string projectName, string? rootNamespace = null)
     {
         _fixes.Clear();
@@ -66,6 +67,7 @@ public sealed class VbToCSharpConverter
         return new(output.ToString(), _fixes.ToArray(), _reviews.ToArray(), _visualBasicRuntimeTypes.Order().ToArray());
     }
 
+    /// <summary>テストや部分変換向けに単一のVB式をC#表現へ変換します。</summary>
     public string ConvertExpression(ExpressionSyntax expression, SemanticModel model, string projectName = "Test")
     {
         _model = model;
@@ -82,6 +84,7 @@ public sealed class VbToCSharpConverter
         return Expr(expression);
     }
 
+    /// <summary>VBステートメントの種類に応じたC#構文を出力します。</summary>
     private void WriteStatement(StatementSyntax statement, StringBuilder output)
     {
         WriteLeadingComments(statement, output);
@@ -162,6 +165,7 @@ public sealed class VbToCSharpConverter
         }
     }
 
+    /// <summary>クラス、構造体、InterfaceまたはModuleの宣言とメンバーを出力します。</summary>
     private void WriteType(TypeStatementSyntax type, SyntaxList<StatementSyntax> members, string keyword, StringBuilder output)
     {
         var access = Access(type.Modifiers);
@@ -174,12 +178,14 @@ public sealed class VbToCSharpConverter
         Block(output, () => { foreach (var m in members) WriteStatement(m, output); });
     }
 
+    /// <summary>VBメソッドブロックをC#メソッドとして出力します。</summary>
     private void WriteMethod(MethodBlockSyntax method, StringBuilder output)
     {
         Line(output, MethodSignature(method.SubOrFunctionStatement));
         Block(output, () => { foreach (var s in method.Statements) WriteStatement(s, output); });
     }
 
+    /// <summary>VBメソッド宣言からC#のメソッドシグネチャを生成します。</summary>
     private string MethodSignature(MethodStatementSyntax method)
     {
         var access = Access(method.Modifiers);
@@ -189,6 +195,7 @@ public sealed class VbToCSharpConverter
         return $"{access}{shared}{returnType} {method.Identifier.ValueText}({parameters})".TrimStart();
     }
 
+    /// <summary>VBプロパティとアクセサーブロックをC#として出力します。</summary>
     private void WriteProperty(PropertyBlockSyntax property, StringBuilder output)
     {
         Line(output, PropertySignature(property.PropertyStatement));
@@ -202,6 +209,7 @@ public sealed class VbToCSharpConverter
         });
     }
 
+    /// <summary>通常プロパティまたはIndexerのC#シグネチャを生成します。</summary>
     private string PropertySignature(PropertyStatementSyntax property)
     {
         var access = Access(property.Modifiers);
@@ -212,6 +220,7 @@ public sealed class VbToCSharpConverter
         return $"{access}{type} {property.Identifier.ValueText}".TrimStart();
     }
 
+    /// <summary>フィールドまたはローカル変数の宣言をC#として出力します。</summary>
     private void WriteDeclaration(string modifierText, SeparatedSyntaxList<VariableDeclaratorSyntax> declarators, StringBuilder output, bool field)
     {
         foreach (var d in declarators)
@@ -227,6 +236,7 @@ public sealed class VbToCSharpConverter
         }
     }
 
+    /// <summary>VB式を種類別にC#式へ変換します。</summary>
     private string Expr(ExpressionSyntax node, bool suppressImplicitCall = false)
     {
         string result = node switch
@@ -238,7 +248,7 @@ public sealed class VbToCSharpConverter
             MyBaseExpressionSyntax => "base",
             LiteralExpressionSyntax literal => Literal(literal),
             ParenthesizedExpressionSyntax p => $"({Expr(p.Expression)})",
-            BinaryExpressionSyntax b => $"{Expr(b.Left)} {BinaryOperator(b.Kind())} {Expr(b.Right)}",
+            BinaryExpressionSyntax b => Binary(b),
             UnaryExpressionSyntax u => $"{UnaryOperator(u.Kind())}{Expr(u.Operand)}",
             ObjectCreationExpressionSyntax o => $"new {Type(o.Type)}({Arguments(o.ArgumentList)})",
             CTypeExpressionSyntax c => $"({Type(c.Type)}){Expr(c.Expression)}",
@@ -250,6 +260,7 @@ public sealed class VbToCSharpConverter
         return result;
     }
 
+    /// <summary>呼び出し式をメソッド、配列またはIndexerとして意味的に変換します。</summary>
     private string Invocation(InvocationExpressionSyntax node)
     {
         var classification = _classifier.ClassifyInvocation(node, _model);
@@ -286,6 +297,7 @@ public sealed class VbToCSharpConverter
         return after;
     }
 
+    /// <summary>Itemプロパティを除去してC#Indexerの対象式を生成します。</summary>
     private string IndexerTarget(ExpressionSyntax expression, IPropertySymbol? property)
     {
         if (expression is MemberAccessExpressionSyntax member &&
@@ -295,6 +307,7 @@ public sealed class VbToCSharpConverter
         return Expr(expression, true);
     }
 
+    /// <summary>メンバーアクセスを変換し、引数なしメソッドには呼び出し括弧を追加します。</summary>
     private string Member(MemberAccessExpressionSyntax node, bool suppressImplicitCall)
     {
         var value = $"{Expr(node.Expression)}.{node.Name.Identifier.ValueText}";
@@ -311,11 +324,18 @@ public sealed class VbToCSharpConverter
         return value;
     }
 
+    /// <summary>識別子を変換し、暗黙の引数なしメソッド呼び出しを補正します。</summary>
     private string Identifier(IdentifierNameSyntax node, bool suppressImplicitCall)
     {
         var name = node.Identifier.ValueText switch { "Me" => "this", "MyBase" => "base", var x => x };
         if (suppressImplicitCall) return name;
         var classification = _classifier.ClassifyExpression(node, _model);
+        if (classification.Symbol is { } symbol && IsVisualBasicRuntimeValueMember(symbol))
+        {
+            var after = $"{VisualBasicRuntimeTypeAccess(symbol.ContainingType)}.{symbol.Name}";
+            Record(node, FixType.VbRuntimeMember, after, classification);
+            return after;
+        }
         if (classification.Symbol is IMethodSymbol { Parameters.Length: 0 })
         {
             var method = (IMethodSymbol)classification.Symbol;
@@ -327,19 +347,51 @@ public sealed class VbToCSharpConverter
         return name;
     }
 
+    /// <summary>VB引数リスト内の各式をC#へ変換して連結します。</summary>
     private string Arguments(ArgumentListSyntax? list) => list is null ? "" :
         string.Join(", ", list.Arguments.Select(a => a is SimpleArgumentSyntax s ? Expr(s.Expression) : a.ToString()));
 
+    /// <summary>VBリテラルを対応するC#リテラル表現へ変換します。</summary>
     private static string Literal(LiteralExpressionSyntax literal) => literal.Kind() switch
     {
         VBSyntaxKind.NothingLiteralExpression => "null",
         VBSyntaxKind.TrueLiteralExpression => "true",
         VBSyntaxKind.FalseLiteralExpression => "false",
-        VBSyntaxKind.StringLiteralExpression => Microsoft.CodeAnalysis.CSharp.SymbolDisplay.FormatLiteral((string)literal.Token.Value!, true),
+        VBSyntaxKind.StringLiteralExpression => StringLiteral((string)literal.Token.Value!),
         VBSyntaxKind.CharacterLiteralExpression => Microsoft.CodeAnalysis.CSharp.SymbolDisplay.FormatLiteral((char)literal.Token.Value!, true),
         _ => literal.Token.ValueText
     };
 
+    /// <summary>実タブを維持しつつC#として安全な文字列リテラルを生成します。</summary>
+    private static string StringLiteral(string value)
+    {
+        var output = new StringBuilder(value.Length + 2).Append('"');
+        foreach (var character in value)
+        {
+            switch (character)
+            {
+                case '"': output.Append("\\\""); break;
+                case '\\': output.Append("\\\\"); break;
+                case '\t': output.Append('\t'); break;
+                case '\0': output.Append("\\0"); break;
+                case '\a': output.Append("\\a"); break;
+                case '\b': output.Append("\\b"); break;
+                case '\f': output.Append("\\f"); break;
+                case '\n': output.Append("\\n"); break;
+                case '\r': output.Append("\\r"); break;
+                case '\v': output.Append("\\v"); break;
+                case '\u2028': output.Append("\\u2028"); break;
+                case '\u2029': output.Append("\\u2029"); break;
+                default:
+                    if (char.IsControl(character)) output.Append("\\u").Append(((int)character).ToString("x4"));
+                    else output.Append(character);
+                    break;
+            }
+        }
+        return output.Append('"').ToString();
+    }
+
+    /// <summary>VB型構文をC#の組み込み型、Genericまたは配列型表現へ変換します。</summary>
     private static string Type(TypeSyntax? type) => type switch
     {
         null => "object",
@@ -358,27 +410,43 @@ public sealed class VbToCSharpConverter
         _ => type.ToString().Replace("Global.", "global::", StringComparison.Ordinal)
     };
 
+    /// <summary>VBパラメーターをByRef指定を含むC#パラメーターへ変換します。</summary>
     private static string Parameter(ParameterSyntax p)
     {
         var modifier = p.Modifiers.Any(VBSyntaxKind.ByRefKeyword) ? "ref " : "";
         return $"{modifier}{Type(p.AsClause?.Type())} {p.Identifier.Identifier.ValueText}";
     }
 
+    /// <summary>VBアクセス修飾子からC#アクセス修飾子を生成します。</summary>
     private static string Access(SyntaxTokenList modifiers) =>
         modifiers.Any(VBSyntaxKind.PublicKeyword) ? "public " :
         modifiers.Any(VBSyntaxKind.ProtectedKeyword) ? "protected " :
         modifiers.Any(VBSyntaxKind.PrivateKeyword) ? "private " : "internal ";
 
+    /// <summary>文字列化されたVB修飾子からフィールド用C#アクセス修飾子を生成します。</summary>
     private static string AccessText(string modifiers) =>
         modifiers.Contains("Public", StringComparison.OrdinalIgnoreCase) ? "public " :
         modifiers.Contains("Private", StringComparison.OrdinalIgnoreCase) ? "private " : "";
 
+    /// <summary>VB代入ステートメント種別をC#代入演算子へ対応付けます。</summary>
     private static string AssignmentOperator(VBSyntaxKind kind) => kind switch
     {
         VBSyntaxKind.AddAssignmentStatement => "+=", VBSyntaxKind.SubtractAssignmentStatement => "-=",
         VBSyntaxKind.MultiplyAssignmentStatement => "*=", VBSyntaxKind.DivideAssignmentStatement => "/=", _ => "="
     };
 
+    /// <summary>参照同一性を専用処理し、それ以外のVB二項式をC#演算子で出力します。</summary>
+    private string Binary(BinaryExpressionSyntax expression)
+    {
+        if (expression.IsKind(VBSyntaxKind.IsExpression) || expression.IsKind(VBSyntaxKind.IsNotExpression))
+        {
+            var comparison = $"object.ReferenceEquals({Expr(expression.Left)}, {Expr(expression.Right)})";
+            return expression.IsKind(VBSyntaxKind.IsNotExpression) ? "!" + comparison : comparison;
+        }
+        return $"{Expr(expression.Left)} {BinaryOperator(expression.Kind())} {Expr(expression.Right)}";
+    }
+
+    /// <summary>VB二項演算子を対応するC#演算子へ変換します。</summary>
     private static string BinaryOperator(VBSyntaxKind kind) => kind switch
     {
         VBSyntaxKind.EqualsExpression => "==", VBSyntaxKind.NotEqualsExpression => "!=",
@@ -394,17 +462,20 @@ public sealed class VbToCSharpConverter
         }
     };
 
+    /// <summary>VB単項演算子を対応するC#演算子へ変換します。</summary>
     private static string UnaryOperator(VBSyntaxKind kind) => kind switch
     {
         VBSyntaxKind.NotExpression => "!", VBSyntaxKind.UnaryMinusExpression => "-", _ => "+"
     };
 
+    /// <summary>未対応式をManualReviewRequiredとして記録し、安全なプレースホルダーを返します。</summary>
     private string UnsupportedExpression(ExpressionSyntax node)
     {
         Review(node, ReasonCode.UnsupportedSyntax, $"Unsupported VB expression: {node.Kind()}");
         return $"/* ManualReviewRequired: {OneLine(node.ToString())} */ default";
     }
 
+    /// <summary>変換位置、前後コード、シンボル根拠を変換ログへ記録します。</summary>
     private void Record(SyntaxNode node, FixType type, string after, SymbolClassification classification)
     {
         var position = node.GetLocation().GetLineSpan().StartLinePosition;
@@ -414,6 +485,7 @@ public sealed class VbToCSharpConverter
             symbol?.ContainingType?.ToDisplayString(), symbol?.ContainingAssembly?.Identity.Name));
     }
 
+    /// <summary>自動変換できない構文をManualReviewRequiredへ追加します。</summary>
     private void Review(SyntaxNode node, ReasonCode code, string details)
     {
         var position = node.GetLocation().GetLineSpan().StartLinePosition;
@@ -421,41 +493,59 @@ public sealed class VbToCSharpConverter
             OneLine(node.ToString()), code, details));
     }
 
+    /// <summary>VBの先行コメントをC#行コメントとして出力します。</summary>
     private void WriteLeadingComments(SyntaxNode node, StringBuilder output)
     {
         foreach (var trivia in node.GetLeadingTrivia().Where(t => t.IsKind(VBSyntaxKind.CommentTrivia)))
             Line(output, "//" + trivia.ToString().TrimStart('\''));
     }
 
+    /// <summary>インデントを管理しながらC#の波括弧ブロックを出力します。</summary>
     private void Block(StringBuilder output, Action body)
     {
         Line(output, "{"); _indent++; body(); _indent--; Line(output, "}");
     }
 
+    /// <summary>現在のインデントを付けて1行出力します。</summary>
     private void Line(StringBuilder output, string value) => output.Append(' ', _indent * 4).AppendLine(value);
+
+    /// <summary>複数行文字列をログ向けの単一行へ整形します。</summary>
     private static string OneLine(string value) => value.Replace("\r", " ").Replace("\n", " ").Trim();
 
+    /// <summary>メソッドがMicrosoft.VisualBasicランタイム由来かをAssemblyとNamespaceから判定します。</summary>
     private static bool IsVisualBasicRuntimeMethod(IMethodSymbol method) =>
-        method.ContainingAssembly?.Identity.Name is { } assemblyName &&
+        IsVisualBasicRuntimeSymbol(method);
+
+    /// <summary>静的なMicrosoft.VisualBasicフィールドまたはプロパティか判定します。</summary>
+    private static bool IsVisualBasicRuntimeValueMember(ISymbol symbol) =>
+        symbol.IsStatic && (symbol is IFieldSymbol || symbol is IPropertySymbol) && IsVisualBasicRuntimeSymbol(symbol);
+
+    /// <summary>シンボルがMicrosoft.VisualBasicアセンブリと名前空間に属するか判定します。</summary>
+    private static bool IsVisualBasicRuntimeSymbol(ISymbol symbol) =>
+        symbol.ContainingAssembly?.Identity.Name is { } assemblyName &&
         (assemblyName.Equals("Microsoft.VisualBasic", StringComparison.OrdinalIgnoreCase) ||
          assemblyName.Equals("Microsoft.VisualBasic.Core", StringComparison.OrdinalIgnoreCase)) &&
-        (method.ContainingNamespace?.ToDisplayString().Equals("Microsoft.VisualBasic", StringComparison.Ordinal) == true ||
-         method.ContainingNamespace?.ToDisplayString().StartsWith("Microsoft.VisualBasic.", StringComparison.Ordinal) == true);
+        (symbol.ContainingNamespace?.ToDisplayString().Equals("Microsoft.VisualBasic", StringComparison.Ordinal) == true ||
+         symbol.ContainingNamespace?.ToDisplayString().StartsWith("Microsoft.VisualBasic.", StringComparison.Ordinal) == true);
 
-    private string VisualBasicRuntimeTypeAccess(IMethodSymbol method)
+    /// <summary>VBランタイム型について通常名または衝突回避aliasによるC#アクセス表現を返します。</summary>
+    private string VisualBasicRuntimeTypeAccess(IMethodSymbol method) => VisualBasicRuntimeTypeAccess(method.ContainingType);
+
+    /// <summary>VBランタイム型について通常名または衝突回避aliasによるC#アクセス表現を返します。</summary>
+    private string VisualBasicRuntimeTypeAccess(INamedTypeSymbol containingType)
     {
-        var fullType = method.ContainingType.ToDisplayString();
+        var fullType = containingType.ToDisplayString();
         _visualBasicRuntimeTypes.Add(fullType);
-        var namespaceName = method.ContainingNamespace.ToDisplayString();
+        var namespaceName = containingType.ContainingNamespace.ToDisplayString();
         var directType = namespaceName.Equals("Microsoft.VisualBasic", StringComparison.Ordinal);
-        if (directType && !_sourceIdentifiers.Contains(method.ContainingType.Name))
+        if (directType && !_sourceIdentifiers.Contains(containingType.Name))
         {
             _needsVisualBasicUsing = true;
-            return method.ContainingType.Name;
+            return containingType.Name;
         }
 
         if (_runtimeAliases.TryGetValue(fullType, out var existing)) return existing;
-        var aliasBase = "VB" + method.ContainingType.Name;
+        var aliasBase = "VB" + containingType.Name;
         var alias = aliasBase;
         for (var suffix = 2; _sourceIdentifiers.Contains(alias) || _runtimeAliases.Values.Contains(alias, StringComparer.OrdinalIgnoreCase); suffix++)
             alias = aliasBase + suffix;
@@ -463,6 +553,7 @@ public sealed class VbToCSharpConverter
         return alias;
     }
 
+    /// <summary>VBのGlobal名前空間宣言でありRootNamespaceを適用しないメンバーか判定します。</summary>
     private static bool IsGlobalNamespace(StatementSyntax statement) =>
         statement is NamespaceBlockSyntax block &&
         block.NamespaceStatement.Name.ToString().StartsWith("Global.", StringComparison.OrdinalIgnoreCase);
@@ -470,6 +561,7 @@ public sealed class VbToCSharpConverter
 
 internal static class SyntaxExtensions
 {
+    /// <summary>As句またはAs New句から宣言型のSyntaxを取得します。</summary>
     public static TypeSyntax? Type(this AsClauseSyntax? clause) => clause switch
     {
         SimpleAsClauseSyntax simple => simple.Type,

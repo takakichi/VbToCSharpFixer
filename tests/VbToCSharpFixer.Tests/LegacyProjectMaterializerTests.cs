@@ -12,6 +12,7 @@ public sealed class LegacyProjectMaterializerTests
     private string _root = null!;
     private string _projectPath = null!;
 
+    /// <summary>各テスト用の旧形式プロジェクトと関連ファイルを一時領域へ準備します。</summary>
     [SetUp]
     public void SetUp()
     {
@@ -33,12 +34,14 @@ public sealed class LegacyProjectMaterializerTests
         File.WriteAllBytes(Path.Combine(_root, "packages", "External.dll"), [7, 8, 9]);
     }
 
+    /// <summary>テストで作成した一時プロジェクト一式を削除します。</summary>
     [TearDown]
     public void TearDown()
     {
         if (Directory.Exists(_root)) Directory.Delete(_root, recursive: true);
     }
 
+    /// <summary>旧形式vbprojの変換、関連ファイルコピー、VBランタイム参照追加を検証します。</summary>
     [Test]
     public async Task Converts_old_vbproj_and_copies_required_files()
     {
@@ -78,6 +81,7 @@ public sealed class LegacyProjectMaterializerTests
         });
     }
 
+    /// <summary>dry-runが計画だけを返し成果物を作成しないことを検証します。</summary>
     [Test]
     public async Task Dry_run_records_plan_without_writing_files()
     {
@@ -95,6 +99,7 @@ public sealed class LegacyProjectMaterializerTests
         });
     }
 
+    /// <summary>Solution内のプロジェクトパスとVB Project Type GUIDの変換を検証します。</summary>
     [Test]
     public async Task Converts_solution_project_path_and_type_guid()
     {
@@ -116,6 +121,7 @@ public sealed class LegacyProjectMaterializerTests
         });
     }
 
+    /// <summary>テスト用VBプロジェクトからRoslyn Compilationを構築します。</summary>
     private async Task<LoadedProject> CreateLoadedProject()
     {
         var workspace = new AdhocWorkspace();

@@ -14,6 +14,7 @@ public sealed class LegacyProjectMaterializer
         "ApplicationDefinition", "Page", "SplashScreen", "EntityDeploy", "TypeScriptCompile"
     };
 
+    /// <summary>Solution、旧形式Projectおよび関連ファイルをC#出力構成として生成します。</summary>
     public async Task<MaterializationResult> MaterializeAsync(
         Options options, IReadOnlyList<LoadedProject> projects, CancellationToken cancellationToken = default)
     {
@@ -43,6 +44,7 @@ public sealed class LegacyProjectMaterializer
         return new(files, changes, reviews, directories, layout.ConversionRoot, buildTarget);
     }
 
+    /// <summary>Solution内のVBプロジェクトパスとProject Type GUIDをC#用に変換します。</summary>
     private static async Task ConvertSolutionAsync(Options options, OutputLayout layout,
         IReadOnlyList<LoadedProject> projects, List<FileCopyLogEntry> files,
         List<ProjectConversionLogEntry> changes, List<ManualReviewItem> reviews, CancellationToken ct)
@@ -75,6 +77,7 @@ public sealed class LegacyProjectMaterializer
         }
     }
 
+    /// <summary>旧形式VBプロジェクトXMLをC#用に変換し、登録ファイルをコピーします。</summary>
     private static async Task ConvertProjectAsync(Options options, OutputLayout layout, Project project,
         IReadOnlyDictionary<string, string> projectOutputs,
         List<FileCopyLogEntry> files, List<ProjectConversionLogEntry> changes,
@@ -200,6 +203,7 @@ public sealed class LegacyProjectMaterializer
                 $"StartupObject was retained and must be verified for C#: {startupObject.Value}"));
     }
 
+    /// <summary>プロジェクト相対のカスタムMSBuild Importファイルを必要に応じてコピーします。</summary>
     private static async Task CopyImportIfLocal(Project project, string projectDirectory, OutputLayout layout,
         string import, Options options, List<FileCopyLogEntry> files, List<ManualReviewItem> reviews, CancellationToken ct)
     {
@@ -207,6 +211,7 @@ public sealed class LegacyProjectMaterializer
         await CopyItemAsync(project, projectDirectory, layout, import, "Import", options, files, reviews, ct);
     }
 
+    /// <summary>プロジェクト項目を安全な出力パスへコピーし、実際の出力先を返します。</summary>
     private static async Task<string?> CopyItemAsync(Project project, string projectDirectory, OutputLayout layout,
         string include, string itemType, Options options, List<FileCopyLogEntry> files,
         List<ManualReviewItem> reviews, CancellationToken ct, string? link = null)
@@ -239,6 +244,7 @@ public sealed class LegacyProjectMaterializer
         return destination;
     }
 
+    /// <summary>VBのMy Project配下にある標準ファイルをC#のProperties構成へ割り当てます。</summary>
     public static string MapProjectPath(string value)
     {
         var normalized = value.Replace('/', Path.DirectorySeparatorChar).Replace('\\', Path.DirectorySeparatorChar);
@@ -254,10 +260,14 @@ public sealed class LegacyProjectMaterializer
         return normalized;
     }
 
+    /// <summary>MSBuild項目パスにワイルドカードが含まれるか判定します。</summary>
     private static bool ContainsWildcard(string value) => value.IndexOfAny(['*', '?']) >= 0;
+
+    /// <summary>プロジェクト構成に関するManualReviewRequired項目を生成します。</summary>
     private static ManualReviewItem Review(string project, string path, ReasonCode reason, string details) =>
         new(project, path, 0, 0, "", reason, details);
 
+    /// <summary>元ファイルのBOMを考慮してテキストエンコーディングを検出します。</summary>
     private static Encoding DetectEncoding(string path)
     {
         using var reader = new StreamReader(path, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);

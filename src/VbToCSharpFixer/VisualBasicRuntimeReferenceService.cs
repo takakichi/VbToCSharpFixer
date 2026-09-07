@@ -5,6 +5,7 @@ namespace VbToCSharpFixer;
 
 public sealed class VisualBasicRuntimeReferenceService
 {
+    /// <summary>VBランタイム呼び出しを含む旧形式C#プロジェクトへ必要なアセンブリ参照を追加します。</summary>
     public async Task<ProjectConversionLogEntry?> EnsureReferenceAsync(
         Project project, string projectOutputDirectory, bool required, bool dryRun,
         CancellationToken cancellationToken = default)

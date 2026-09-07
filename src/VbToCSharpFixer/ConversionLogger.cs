@@ -5,6 +5,7 @@ namespace VbToCSharpFixer;
 
 public static class ConversionLogger
 {
+    /// <summary>変換、コピー、プロジェクト処理、レビュー項目および集計ログを出力します。</summary>
     public static async Task WriteAsync(string outputRoot, IReadOnlyList<FixResult> fixes,
         IReadOnlyList<ManualReviewItem> reviews, IReadOnlyList<string> workspaceDiagnostics,
         IReadOnlyList<FileCopyLogEntry> fileOperations,
@@ -51,5 +52,6 @@ public static class ConversionLogger
         await File.WriteAllTextAsync(Path.Combine(outputRoot, "summary.txt"), summary, cancellationToken);
     }
 
+    /// <summary>CSVフィールドとして安全な引用形式へエスケープします。</summary>
     private static string Csv(string value) => $"\"{value.Replace("\"", "\"\"")}\"";
 }
