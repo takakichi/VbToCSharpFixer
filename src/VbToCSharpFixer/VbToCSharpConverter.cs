@@ -142,6 +142,18 @@ public sealed class VbToCSharpConverter
             case ThrowStatementSyntax t:
                 Line(output, t.Expression is null ? "throw;" : $"throw {Expr(t.Expression)};");
                 break;
+            case TryBlockSyntax t:
+                WriteTryBlock(t, output);
+                break;
+            case ForBlockSyntax f:
+                WriteForBlock(f, output);
+                break;
+            case ContinueStatementSyntax c when c.BlockKeyword.IsKind(VBSyntaxKind.ForKeyword):
+                Line(output, "continue;");
+                break;
+            case ExitStatementSyntax e when e.BlockKeyword.IsKind(VBSyntaxKind.ForKeyword):
+                Line(output, "break;");
+                break;
             case MultiLineIfBlockSyntax i:
                 Line(output, $"if ({Expr(i.IfStatement.Condition)})");
                 Block(output, () => { foreach (var x in i.Statements) WriteStatement(x, output); });
@@ -183,6 +195,148 @@ public sealed class VbToCSharpConverter
     {
         Line(output, MethodSignature(method.SubOrFunctionStatement));
         Block(output, () => { foreach (var s in method.Statements) WriteStatement(s, output); });
+    }
+
+    /// <summary>VBのTry、Catch、Finallyブロックを同じ順序のC#例外処理へ変換します。</summary>
+    private void WriteTryBlock(TryBlockSyntax block, StringBuilder output)
+    {
+        Line(output, "try");
+        Block(output, () => { foreach (var statement in block.Statements) WriteStatement(statement, output); });
+        foreach (var catchBlock in block.CatchBlocks) WriteCatchBlock(catchBlock, output);
+        if (block.FinallyBlock is not null)
+        {
+            WriteLeadingComments(block.FinallyBlock.FinallyStatement, output);
+            Line(output, "finally");
+            Block(output, () =>
+            {
+                foreach (var statement in block.FinallyBlock.Statements) WriteStatement(statement, output);
+            });
+        }
+    }
+
+    /// <summary>VBのCatch宣言、例外型、Whenフィルターおよび本体をC#へ変換します。</summary>
+    private void WriteCatchBlock(CatchBlockSyntax block, StringBuilder output)
+    {
+        var statement = block.CatchStatement;
+        WriteLeadingComments(statement, output);
+        var identifier = statement.IdentifierName?.Identifier.ValueText;
+        var declaration = identifier is null
+            ? ""
+            : $" ({(statement.AsClause is null ? "global::System.Exception" : CatchType(statement.AsClause))} {identifier})";
+        var filter = statement.WhenClause is null ? "" : $" when ({Expr(statement.WhenClause.Filter)})";
+        Line(output, "catch" + declaration + filter);
+        Block(output, () => { foreach (var child in block.Statements) WriteStatement(child, output); });
+    }
+
+    /// <summary>Catch例外型をGlobal Importsに依存しないC#完全修飾名として返します。</summary>
+    private string CatchType(SimpleAsClauseSyntax clause)
+    {
+        var type = _model.GetTypeInfo(clause.Type).Type;
+        return type?.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)
+            .Replace("Global.", "global::", StringComparison.Ordinal) ?? Type(clause.Type);
+    }
+
+    /// <summary>安全に型付けされたVB数値Forを、上限とStepを一度だけ評価するC#ループへ変換します。</summary>
+    private void WriteForBlock(ForBlockSyntax block, StringBuilder output)
+    {
+        var statement = block.ForStatement;
+        if (!TryGetForControl(statement, out var control, out var declaration, out var controlType, out var typeName) ||
+            block.NextStatement.ControlVariables.Count > 1 ||
+            !CanAssignForValue(statement.FromValue, controlType) ||
+            !CanAssignForValue(statement.ToValue, controlType) ||
+            statement.StepClause is not null && !CanAssignForValue(statement.StepClause.StepValue, controlType))
+        {
+            Review(block, ReasonCode.UnsupportedSyntax,
+                "For requires a simple numeric variable and non-narrowing start, limit and step values");
+            Line(output, $"// ManualReviewRequired: unsupported ForBlock: {OneLine(block.ToString())}");
+            return;
+        }
+
+        var limit = CreateUniqueTemporaryName("__forLimit");
+        var step = CreateUniqueTemporaryName("__forStep");
+        Line(output, "{");
+        _indent++;
+        Line(output, declaration
+            ? $"{typeName} {control} = {Expr(statement.FromValue)};"
+            : $"{control} = {Expr(statement.FromValue)};");
+        Line(output, $"{typeName} {limit} = {Expr(statement.ToValue)};");
+        Line(output, $"{typeName} {step} = {(statement.StepClause is null ? "1" : Expr(statement.StepClause.StepValue))};");
+        Line(output, $"for (; ({step} >= 0 ? {control} <= {limit} : {control} >= {limit}); {control} += {step})");
+        Block(output, () => { foreach (var child in block.Statements) WriteStatement(child, output); });
+        _indent--;
+        Line(output, "}");
+    }
+
+    /// <summary>For制御変数を宣言または既存の単純変数として解決し、C#数値型を返します。</summary>
+    private bool TryGetForControl(ForStatementSyntax statement, out string control, out bool declaration,
+        out ITypeSymbol controlType, out string typeName)
+    {
+        control = "";
+        declaration = false;
+        controlType = null!;
+        typeName = "";
+        ISymbol? symbol;
+        switch (statement.ControlVariable)
+        {
+            case VariableDeclaratorSyntax variable when variable.Names.Count == 1:
+                var name = variable.Names[0];
+                symbol = _model.GetDeclaredSymbol(name);
+                if (symbol is not ILocalSymbol local || local.IsConst) return false;
+                control = name.Identifier.ValueText;
+                declaration = true;
+                controlType = local.Type;
+                break;
+            case IdentifierNameSyntax identifier:
+                symbol = _model.GetSymbolInfo(identifier).Symbol;
+                if (symbol is ILocalSymbol { IsConst: false } existingLocal)
+                    controlType = existingLocal.Type;
+                else if (symbol is IParameterSymbol parameter)
+                    controlType = parameter.Type;
+                else if (symbol is IFieldSymbol { IsConst: false, IsReadOnly: false } field)
+                    controlType = field.Type;
+                else
+                    return false;
+                control = Expr(identifier, true);
+                break;
+            default:
+                return false;
+        }
+
+        typeName = CSharpNumericType(controlType) ?? "";
+        return typeName.Length > 0;
+    }
+
+    /// <summary>For境界値が制御変数型へユーザー定義変換や縮小変換なしで代入可能か判定します。</summary>
+    private bool CanAssignForValue(ExpressionSyntax expression, ITypeSymbol targetType)
+    {
+        var conversion = _model.ClassifyConversion(expression, targetType);
+        return conversion.Exists && !conversion.IsNarrowing && !conversion.IsUserDefined;
+    }
+
+    /// <summary>Forで安全に扱う組み込み数値型をC#キーワードへ対応付けます。</summary>
+    private static string? CSharpNumericType(ITypeSymbol type) => type.SpecialType switch
+    {
+        SpecialType.System_SByte => "sbyte",
+        SpecialType.System_Byte => "byte",
+        SpecialType.System_Int16 => "short",
+        SpecialType.System_UInt16 => "ushort",
+        SpecialType.System_Int32 => "int",
+        SpecialType.System_UInt32 => "uint",
+        SpecialType.System_Int64 => "long",
+        SpecialType.System_UInt64 => "ulong",
+        SpecialType.System_Single => "float",
+        SpecialType.System_Double => "double",
+        SpecialType.System_Decimal => "decimal",
+        _ => null
+    };
+
+    /// <summary>ソース識別子および既に生成した名前と衝突しない一時変数名を作成します。</summary>
+    private string CreateUniqueTemporaryName(string baseName)
+    {
+        var candidate = baseName;
+        for (var suffix = 2; _sourceIdentifiers.Contains(candidate); suffix++) candidate = baseName + suffix;
+        _sourceIdentifiers.Add(candidate);
+        return candidate;
     }
 
     /// <summary>VBメソッド宣言からC#のメソッドシグネチャを生成します。</summary>

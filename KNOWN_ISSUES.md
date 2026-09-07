@@ -8,9 +8,9 @@
 
 - Event、Delegate、`Handles`、`WithEvents`
 - `With`ブロック
-- 複雑なFor、For Each、While、Do Loop
+- Object／Late Binding／ユーザー定義変換を使用するFor、For Each、While、Do Loop
 - `Select Case`
-- Try/Catch/Finally
+- `Exit Try`、`On Error`、`Resume`
 - LINQ query syntax
 - Iterator、AsyncのVB固有構文
 - XMLリテラル

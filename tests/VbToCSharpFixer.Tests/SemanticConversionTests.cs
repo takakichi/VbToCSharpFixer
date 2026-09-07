@@ -367,6 +367,259 @@ End Class
         Assert.That(actual, Is.EqualTo(expected));
     }
 
+    /// <summary>Try、複数Catch、Whenフィルター、再スロー、FinallyをC#へ変換します。</summary>
+    [Test]
+    public void Converts_try_catch_filter_and_finally()
+    {
+        var source = """
+Imports System
+Public Class C
+    Public Sub Run(value As Object)
+        Try
+            Dim text = value.ToString()
+        Catch ex As InvalidOperationException When ex.Message <> ""
+            Throw
+        Catch ex
+            Dim message = ex.Message
+        Catch
+            Return
+        Finally
+            Dim finished = True
+        End Try
+    End Sub
+End Class
+""";
+        var tree = VisualBasicSyntaxTree.ParseText(source, path: "try.vb");
+        var compilation = CreateCompilation(tree);
+        var result = new VbToCSharpConverter().Convert(tree, compilation.GetSemanticModel(tree), "Test");
+        Assert.Multiple(() =>
+        {
+            Assert.That(result.CSharp, Does.Match(@"\btry\r?\n"));
+            Assert.That(result.CSharp, Does.Contain("catch (global::System.InvalidOperationException ex) when (ex.Message != \"\")"));
+            Assert.That(result.CSharp, Does.Contain("catch (global::System.Exception ex)"));
+            Assert.That(result.CSharp, Does.Match(@"\bcatch\r?\n"));
+            Assert.That(result.CSharp, Does.Contain("throw;"));
+            Assert.That(result.CSharp, Does.Match(@"\bfinally\r?\n"));
+            Assert.That(result.CSharp, Does.Not.Contain("unsupported TryBlock"));
+            Assert.That(result.ManualReviews, Is.Empty);
+            AssertGeneratedCompiles(result, compilation, "TryConverted");
+        });
+    }
+
+    /// <summary>Forの境界値とStepを一度だけ評価し、Exit／Continue Forを変換します。</summary>
+    [Test]
+    public void Converts_for_with_dynamic_step_exit_and_continue()
+    {
+        var source = """
+Public Class C
+    Public Function Run(limit As Integer, stepValue As Integer) As Integer
+        Dim total = 0
+        For i As Integer = 1 To limit Step stepValue
+            If i = 3 Then
+                Continue For
+            End If
+            If i = 8 Then
+                Exit For
+            End If
+            total += i
+        Next
+        Return total
+    End Function
+End Class
+""";
+        var tree = VisualBasicSyntaxTree.ParseText(source, path: "for.vb");
+        var compilation = CreateCompilation(tree);
+        var result = new VbToCSharpConverter().Convert(tree, compilation.GetSemanticModel(tree), "Test");
+        Assert.Multiple(() =>
+        {
+            Assert.That(result.CSharp, Does.Contain("int i = 1;"));
+            Assert.That(result.CSharp, Does.Contain("int __forLimit = limit;"));
+            Assert.That(result.CSharp, Does.Contain("int __forStep = stepValue;"));
+            Assert.That(result.CSharp, Does.Contain("(__forStep >= 0 ? i <= __forLimit : i >= __forLimit)"));
+            Assert.That(result.CSharp, Does.Contain("continue;"));
+            Assert.That(result.CSharp, Does.Contain("break;"));
+            Assert.That(result.CSharp, Does.Not.Contain("unsupported ForBlock"));
+            Assert.That(result.ManualReviews, Is.Empty);
+            AssertGeneratedCompiles(result, compilation, "ForConverted");
+        });
+    }
+
+    /// <summary>負のStepと宣言済み制御変数を正しい終了条件で変換します。</summary>
+    [Test]
+    public void Converts_for_with_existing_variable_and_negative_step()
+    {
+        var source = """
+Public Class C
+    Public Sub Run()
+        Dim i As Integer
+        For i = 10 To 1 Step -1
+            Dim current = i
+        Next i
+    End Sub
+End Class
+""";
+        var tree = VisualBasicSyntaxTree.ParseText(source, path: "for-negative.vb");
+        var compilation = CreateCompilation(tree);
+        var result = new VbToCSharpConverter().Convert(tree, compilation.GetSemanticModel(tree), "Test");
+        Assert.Multiple(() =>
+        {
+            Assert.That(result.CSharp, Does.Contain("i = 10;"));
+            Assert.That(result.CSharp, Does.Contain("int __forStep = -1;"));
+            Assert.That(result.CSharp, Does.Contain("i >= __forLimit"));
+            AssertGeneratedCompiles(result, compilation, "NegativeForConverted");
+        });
+    }
+
+    /// <summary>Forの終了値とStepに含まれる呼び出しを生成コードへ一度だけ出力します。</summary>
+    [Test]
+    public void Evaluates_for_limit_and_step_expressions_once()
+    {
+        var source = """
+Public Class C
+    Private Function GetLimit() As Integer
+        Return 10
+    End Function
+    Private Function GetStep() As Integer
+        Return 2
+    End Function
+    Public Sub Run()
+        For i As Integer = 1 To GetLimit() Step GetStep()
+            Dim current = i
+        Next
+    End Sub
+End Class
+""";
+        var tree = VisualBasicSyntaxTree.ParseText(source, path: "for-evaluation.vb");
+        var compilation = CreateCompilation(tree);
+        var result = new VbToCSharpConverter().Convert(tree, compilation.GetSemanticModel(tree), "Test");
+        var runMethod = result.CSharp[result.CSharp.IndexOf("public void Run", StringComparison.Ordinal)..];
+        Assert.Multiple(() =>
+        {
+            Assert.That(runMethod.Split("GetLimit()", StringSplitOptions.None).Length - 1, Is.EqualTo(1));
+            Assert.That(runMethod.Split("GetStep()", StringSplitOptions.None).Length - 1, Is.EqualTo(1));
+            AssertGeneratedCompiles(result, compilation, "EvaluationForConverted");
+        });
+    }
+
+    /// <summary>入れ子のForで生成一時変数名が重複しないことを検証します。</summary>
+    [Test]
+    public void Uses_unique_temporary_names_for_nested_for_blocks()
+    {
+        var source = """
+Public Class C
+    Public Sub Run()
+        Dim __forLimit = 99
+        For i As Integer = 1 To 2
+            For j As Integer = 1 To 3
+                Dim value = i + j
+            Next
+        Next
+    End Sub
+End Class
+""";
+        var tree = VisualBasicSyntaxTree.ParseText(source, path: "nested-for.vb");
+        var compilation = CreateCompilation(tree);
+        var result = new VbToCSharpConverter().Convert(tree, compilation.GetSemanticModel(tree), "Test");
+        Assert.Multiple(() =>
+        {
+            Assert.That(result.CSharp, Does.Contain("int __forLimit2 = 2;"));
+            Assert.That(result.CSharp, Does.Contain("int __forLimit3 = 3;"));
+            Assert.That(result.CSharp, Does.Contain("int __forStep = 1;"));
+            Assert.That(result.CSharp, Does.Contain("int __forStep2 = 1;"));
+            AssertGeneratedCompiles(result, compilation, "NestedForConverted");
+        });
+    }
+
+    /// <summary>Object制御変数を推測変換せずManualReviewRequiredへ残します。</summary>
+    [Test]
+    public void Leaves_late_bound_object_for_for_manual_review()
+    {
+        var source = """
+Option Strict Off
+Public Class C
+    Public Sub Run()
+        For value As Object = 1 To 3
+            Dim current = value
+        Next
+    End Sub
+End Class
+""";
+        var tree = VisualBasicSyntaxTree.ParseText(source, path: "object-for.vb");
+        var compilation = CreateCompilation(tree);
+        var result = new VbToCSharpConverter().Convert(tree, compilation.GetSemanticModel(tree), "Test");
+        Assert.Multiple(() =>
+        {
+            Assert.That(result.CSharp, Does.Contain("ManualReviewRequired: unsupported ForBlock"));
+            Assert.That(result.ManualReviews.Single().ReasonCode, Is.EqualTo(ReasonCode.UnsupportedSyntax));
+        });
+    }
+
+    /// <summary>生成したForが正負のStepで同じ数値結果を返すことを実行時に検証します。</summary>
+    [Test]
+    public void Generated_for_executes_with_positive_and_negative_steps()
+    {
+        var source = """
+Public Class LoopRunner
+    Public Function SumValues(first As Integer, last As Integer, stepValue As Integer) As Integer
+        Dim total = 0
+        For i As Integer = first To last Step stepValue
+            total += i
+        Next
+        Return total
+    End Function
+End Class
+""";
+        var (instance, type) = ConvertCompileAndCreate(source, "LoopRunner");
+        var method = type.GetMethod("SumValues")!;
+        Assert.Multiple(() =>
+        {
+            Assert.That(method.Invoke(instance, [1, 5, 2]), Is.EqualTo(9));
+            Assert.That(method.Invoke(instance, [5, 1, -2]), Is.EqualTo(9));
+            Assert.That(method.Invoke(instance, [5, 1, 1]), Is.EqualTo(0));
+        });
+    }
+
+    /// <summary>生成したCatchとFinallyが実行時に元の順序で処理されることを検証します。</summary>
+    [Test]
+    public void Generated_try_executes_catch_then_finally()
+    {
+        var source = """
+Imports System
+Public Class TryRunner
+    Public Function Run() As Integer
+        Dim result = 0
+        Try
+            Throw New InvalidOperationException()
+        Catch ex As InvalidOperationException
+            result = 1
+        Finally
+            result += 2
+        End Try
+        Return result
+    End Function
+End Class
+""";
+        var (instance, type) = ConvertCompileAndCreate(source, "TryRunner");
+        Assert.That(type.GetMethod("Run")!.Invoke(instance, null), Is.EqualTo(3));
+    }
+
+    /// <summary>ProjectのGlobal Importsだけで解決したCatch型を完全修飾してC#でも有効にします。</summary>
+    [Test]
+    public void Qualifies_catch_type_resolved_from_project_global_import()
+    {
+        var source = "Public Class C\nPublic Sub Run()\nTry\nDim value = 1\nCatch ex As Exception\nThrow\nEnd Try\nEnd Sub\nEnd Class";
+        var tree = VisualBasicSyntaxTree.ParseText(source, path: "global-catch.vb");
+        var compilation = VisualBasicCompilation.Create("GlobalCatch", [tree], PlatformReferences(),
+            new VisualBasicCompilationOptions(OutputKind.DynamicallyLinkedLibrary,
+                globalImports: [GlobalImport.Parse("System")]));
+        var result = new VbToCSharpConverter().Convert(tree, compilation.GetSemanticModel(tree), "Test");
+        Assert.Multiple(() =>
+        {
+            Assert.That(result.CSharp, Does.Contain("catch (global::System.Exception ex)"));
+            AssertGeneratedCompiles(result, compilation, "GlobalCatchConverted");
+        });
+    }
+
     /// <summary>プロジェクトのGlobal Importsから必要なusingを追加することを検証します。</summary>
     [Test]
     public void Adds_visual_basic_using_for_project_level_global_import()
@@ -459,6 +712,31 @@ End Class
         Assert.That(errors, Is.Empty, string.Join("\n", errors.Select(x => x.ToString())));
         var expression = tree.GetRoot().DescendantNodes().OfType<EqualsValueSyntax>().Last().Value;
         return (expression, compilation.GetSemanticModel(tree));
+    }
+
+    /// <summary>生成された単一C#ソースを元VB Compilationの参照でコンパイル検証します。</summary>
+    private static void AssertGeneratedCompiles(ConversionResult result, Compilation compilation, string name)
+    {
+        var errors = new ValidationService().ValidateCompilation(
+            [(result.CSharp, name + ".cs")], compilation.References, name);
+        Assert.That(errors, Is.Empty, string.Join("\n", errors.Select(x => x.ToString())));
+    }
+
+    /// <summary>VBソースを変換してC# Assemblyをメモリへemitし、指定した型のインスタンスを返します。</summary>
+    private static (object Instance, Type Type) ConvertCompileAndCreate(string source, string typeName)
+    {
+        var tree = VisualBasicSyntaxTree.ParseText(source, path: typeName + ".vb");
+        var vbCompilation = CreateCompilation(tree, typeName + "Vb");
+        var result = new VbToCSharpConverter().Convert(tree, vbCompilation.GetSemanticModel(tree), "Test");
+        var csharpTree = Microsoft.CodeAnalysis.CSharp.CSharpSyntaxTree.ParseText(result.CSharp, path: typeName + ".cs");
+        var csharpCompilation = Microsoft.CodeAnalysis.CSharp.CSharpCompilation.Create(
+            typeName + "Cs" + Guid.NewGuid().ToString("N"), [csharpTree], vbCompilation.References,
+            new Microsoft.CodeAnalysis.CSharp.CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+        using var stream = new MemoryStream();
+        var emit = csharpCompilation.Emit(stream);
+        Assert.That(emit.Success, Is.True, string.Join("\n", emit.Diagnostics));
+        var type = System.Reflection.Assembly.Load(stream.ToArray()).GetType(typeName)!;
+        return (Activator.CreateInstance(type)!, type);
     }
 
     /// <summary>プラットフォーム参照を含むテスト用VB Compilationを生成します。</summary>

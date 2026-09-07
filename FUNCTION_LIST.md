@@ -36,6 +36,14 @@
 | `WriteStatement` | VBステートメントを種類別に出力する |
 | `WriteType` | Class、Structure、Interface、Moduleを出力する |
 | `WriteMethod` | メソッドブロックを出力する |
+| `WriteTryBlock` | Try、Catch、Finallyを同じ順序のC#例外処理へ変換する |
+| `WriteCatchBlock` | Catchの例外型、変数、Whenフィルターと本体を変換する |
+| `CatchType` | Catch例外型をGlobal Importsに依存しない完全修飾名へ変換する |
+| `WriteForBlock` | 境界値とStepを一度だけ評価するC#数値ループを出力する |
+| `TryGetForControl` | For制御変数と組み込み数値型を安全に解決する |
+| `CanAssignForValue` | Forの開始値、終了値、Step値が縮小変換なしで代入可能か判定する |
+| `CSharpNumericType` | For対応数値型をC#キーワードへ対応付ける |
+| `CreateUniqueTemporaryName` | For用一時変数の衝突しない名前を生成する |
 | `MethodSignature` | C#メソッドシグネチャを生成する |
 | `WriteProperty` | PropertyとAccessorを出力する |
 | `PropertySignature` | PropertyまたはIndexerのシグネチャを生成する |

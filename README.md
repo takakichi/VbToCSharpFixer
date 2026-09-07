@@ -42,6 +42,8 @@ var lines = "first" + Constants.vbCrLf + "second";
 
 VBの`Is`／`IsNot`による参照同一性比較は、演算子オーバーロードとC#言語バージョンの影響を避けるため、`object.ReferenceEquals(...)`へ変換します。VB文字列内の実タブは、生成C#でも実タブのまま維持します。
 
+通常の`Try`／`Catch`／`Finally`、複数Catch、`Catch When`をC#の例外処理へ変換します。組み込み数値型の`For`は開始値、終了値、Step値の評価回数を維持するため一時変数を生成し、正負どちらのStepにも対応します。`Exit For`と`Continue For`もそれぞれ`break`と`continue`へ変換します。Object型やユーザー定義変換など安全性を確定できないForは`ManualReviewRequired`に残します。
+
 ## 設計上の境界
 
 この実装は誤変換回避を優先します。主要な型・メソッド・プロパティ・式・宣言・条件分岐は変換しますが、イベント、LINQ query syntax、複雑な制御構文など未対応の VB 構文はレビュー対象です。`.sln/.vbproj` 入力では `MSBuildWorkspace` が ProjectReference、DLL/NuGet/Framework 参照、Imports、Define、RootNamespace 等をロードします。フォルダ/単一ファイル入力では .NET 8 の platform assemblies のみを参照します。

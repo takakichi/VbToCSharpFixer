@@ -111,7 +111,25 @@ Strings.Mid(text, 1, 3);
 - VB文字列に含まれる実タブはC#文字列でも実タブとして維持する
 - 引用符、バックスラッシュ、その他の制御文字はC#リテラルとして安全にエスケープする
 
-## 7. 検証フロー
+## 7. TryとFor
+
+### Try
+
+1. Try本体を再帰的に変換する
+2. Catchを元の順序で出力する
+3. 例外変数、例外型、WhenフィルターをC#のcatchへ変換する
+4. Finally本体を再帰的に変換する
+
+### For
+
+1. 制御変数が組み込み数値型の単純変数かSemanticModelで確認する
+2. 開始値を制御変数へ一度だけ代入する
+3. 終了値とStep値を衝突しない一時変数へ一度だけ保存する
+4. Stepの符号に応じて`<=`または`>=`を選択する条件を生成する
+5. `Exit For`を`break`、`Continue For`を`continue`へ変換する
+6. Object、ユーザー定義変換、縮小変換などはManualReviewRequiredにする
+
+## 8. 検証フロー
 
 ### Syntax検証
 
@@ -133,7 +151,7 @@ dotnet msbuild <生成SolutionまたはProject>
 
 `--skip-build`または`--dry-run`では実行しません。
 
-## 8. エラー処理
+## 9. エラー処理
 
 - 致命的なCLI／Workspace例外: 終了コード1
 - ManualReviewRequiredなし: 終了コード0
