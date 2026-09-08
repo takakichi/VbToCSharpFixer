@@ -18,6 +18,7 @@ public sealed class VbToCSharpConverter
     private readonly HashSet<string> _visualBasicRuntimeTypes = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> _runtimeAliases = new(StringComparer.Ordinal);
     private readonly HashSet<string> _sourceIdentifiers = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Stack<string> _withTargets = new();
     private bool _needsVisualBasicUsing;
     private SemanticModel _model = null!;
     private string _project = "";
@@ -32,6 +33,7 @@ public sealed class VbToCSharpConverter
         _visualBasicRuntimeTypes.Clear();
         _runtimeAliases.Clear();
         _sourceIdentifiers.Clear();
+        _withTargets.Clear();
         _needsVisualBasicUsing = false;
         _model = model;
         _project = projectName;
@@ -78,6 +80,7 @@ public sealed class VbToCSharpConverter
         _visualBasicRuntimeTypes.Clear();
         _runtimeAliases.Clear();
         _sourceIdentifiers.Clear();
+        _withTargets.Clear();
         _needsVisualBasicUsing = false;
         foreach (var token in expression.SyntaxTree.GetRoot().DescendantTokens().Where(x => x.IsKind(VBSyntaxKind.IdentifierToken)))
             _sourceIdentifiers.Add(token.ValueText);
@@ -147,6 +150,12 @@ public sealed class VbToCSharpConverter
                 break;
             case ForBlockSyntax f:
                 WriteForBlock(f, output);
+                break;
+            case ForEachBlockSyntax f:
+                WriteForEachBlock(f, output);
+                break;
+            case WithBlockSyntax w:
+                WriteWithBlock(w, output);
                 break;
             case ContinueStatementSyntax c when c.BlockKeyword.IsKind(VBSyntaxKind.ForKeyword):
                 Line(output, "continue;");
@@ -267,6 +276,130 @@ public sealed class VbToCSharpConverter
         Line(output, "}");
     }
 
+    /// <summary>安全に解決できるVBのFor Eachを、制御変数の代入可能性を維持したC# foreachへ変換します。</summary>
+    private void WriteForEachBlock(ForEachBlockSyntax block, StringBuilder output)
+    {
+        var statement = block.ForEachStatement;
+        if (!TryGetForEachControl(statement, out var control, out var declaration, out var controlType) ||
+            block.NextStatement.ControlVariables.Count > 1 ||
+            !CanSafelyEnumerate(statement, controlType) ||
+            CSharpTypeName(controlType) is not { } typeName)
+        {
+            Review(block, ReasonCode.UnsupportedSyntax,
+                "For Each requires a statically enumerable expression and a safely convertible simple control variable");
+            Line(output, $"// ManualReviewRequired: unsupported ForEachBlock: {OneLine(block.ToString())}");
+            return;
+        }
+
+        var item = CreateUniqueTemporaryName("__forEachItem");
+        Line(output, $"foreach ({typeName} {item} in {Expr(statement.Expression)})");
+        Block(output, () =>
+        {
+            Line(output, declaration ? $"{typeName} {control} = {item};" : $"{control} = {item};");
+            foreach (var child in block.Statements) WriteStatement(child, output);
+        });
+    }
+
+    /// <summary>For Each制御変数を宣言または既存の単純変数として意味解析します。</summary>
+    private bool TryGetForEachControl(ForEachStatementSyntax statement, out string control,
+        out bool declaration, out ITypeSymbol controlType)
+    {
+        control = "";
+        declaration = false;
+        controlType = null!;
+        switch (statement.ControlVariable)
+        {
+            case VariableDeclaratorSyntax variable when variable.Names.Count == 1:
+                var name = variable.Names[0];
+                if (_model.GetDeclaredSymbol(name) is not ILocalSymbol { IsConst: false } local) return false;
+                control = name.Identifier.ValueText;
+                declaration = true;
+                controlType = local.Type;
+                return !local.Type.IsAnonymousType;
+            case IdentifierNameSyntax identifier:
+                var symbol = _model.GetSymbolInfo(identifier).Symbol;
+                if (symbol is ILocalSymbol { IsConst: false } existingLocal)
+                    controlType = existingLocal.Type;
+                else if (symbol is IParameterSymbol parameter)
+                    controlType = parameter.Type;
+                else if (symbol is IFieldSymbol { IsConst: false, IsReadOnly: false } field)
+                    controlType = field.Type;
+                else
+                    return false;
+                control = Expr(identifier, true);
+                return !controlType.IsAnonymousType;
+            default:
+                return false;
+        }
+    }
+
+    /// <summary>For Eachの列挙型と要素変換がC# foreachでも安全に表現できるか判定します。</summary>
+    private bool CanSafelyEnumerate(ForEachStatementSyntax statement, ITypeSymbol controlType)
+    {
+        var collectionType = _model.GetTypeInfo(statement.Expression).Type;
+        if (collectionType is null || collectionType.SpecialType == SpecialType.System_Object) return false;
+        var info = _model.GetForEachStatementInfo(statement);
+        if (info.ElementType is null || info.GetEnumeratorMethod?.ReducedFrom is not null) return false;
+        var conversion = info.ElementConversion;
+        return conversion.Exists && !conversion.IsUserDefined &&
+               (!conversion.IsNarrowing || conversion.IsReference) &&
+               SymbolEqualityComparer.Default.Equals(
+                   _model.GetTypeInfo(statement.ControlVariable).Type ?? controlType, controlType);
+    }
+
+    /// <summary>参照型または読み取り専用の値型を対象とするVB WithブロックをC#へ変換します。</summary>
+    private void WriteWithBlock(WithBlockSyntax block, StringBuilder output)
+    {
+        var targetExpression = block.WithStatement.Expression;
+        var targetType = _model.GetTypeInfo(targetExpression).Type;
+        if (targetType is null || targetType.SpecialType == SpecialType.System_Object ||
+            !targetType.IsReferenceType && (!targetType.IsValueType || !IsReadOnlyValueTypeWith(block)))
+        {
+            Review(block, ReasonCode.UnsupportedSyntax,
+                "With requires a resolved reference type or a read-only value-type body");
+            Line(output, $"// ManualReviewRequired: unsupported WithBlock: {OneLine(block.ToString())}");
+            return;
+        }
+
+        var target = CreateUniqueTemporaryName("__withTarget");
+        Line(output, "{");
+        _indent++;
+        Line(output, $"var {target} = {Expr(targetExpression)};");
+        _withTargets.Push(target);
+        try
+        {
+            foreach (var statement in block.Statements) WriteStatement(statement, output);
+        }
+        finally
+        {
+            _withTargets.Pop();
+        }
+        _indent--;
+        Line(output, "}");
+    }
+
+    /// <summary>値型Withの本体が代入や呼び出しを含まない読み取り専用か保守的に判定します。</summary>
+    private static bool IsReadOnlyValueTypeWith(WithBlockSyntax block)
+    {
+        var nodes = block.Statements.SelectMany(x => x.DescendantNodesAndSelf())
+            .Where(x => !x.Ancestors().OfType<WithBlockSyntax>().Any(nested => nested != block));
+        return !nodes.Any(node => node switch
+        {
+            AssignmentStatementSyntax assignment => IsWithBasedExpression(assignment.Left),
+            InvocationExpressionSyntax invocation => invocation.DescendantNodesAndSelf()
+                .OfType<MemberAccessExpressionSyntax>().Any(HasOmittedWithReceiver),
+            _ => false
+        });
+    }
+
+    /// <summary>式が現在のWith対象を起点とする先頭ドットのメンバー参照か判定します。</summary>
+    private static bool IsWithBasedExpression(ExpressionSyntax expression) =>
+        expression.DescendantNodesAndSelf().OfType<MemberAccessExpressionSyntax>().Any(HasOmittedWithReceiver);
+
+    /// <summary>VB With内で左辺が省略されたメンバーアクセスか判定します。</summary>
+    private static bool HasOmittedWithReceiver(MemberAccessExpressionSyntax member) =>
+        member.Expression is null || member.Expression.IsMissing;
+
     /// <summary>For制御変数を宣言または既存の単純変数として解決し、C#数値型を返します。</summary>
     private bool TryGetForControl(ForStatementSyntax statement, out string control, out bool declaration,
         out ITypeSymbol controlType, out string typeName)
@@ -329,6 +462,59 @@ public sealed class VbToCSharpConverter
         SpecialType.System_Decimal => "decimal",
         _ => null
     };
+
+    /// <summary>Roslyn型シンボルをGlobal Importsに依存しないC#型名へ変換します。</summary>
+    private static string? CSharpTypeName(ITypeSymbol type)
+    {
+        var keyword = type.SpecialType switch
+        {
+            SpecialType.System_Object => "object",
+            SpecialType.System_Boolean => "bool",
+            SpecialType.System_Char => "char",
+            SpecialType.System_String => "string",
+            SpecialType.System_SByte => "sbyte",
+            SpecialType.System_Byte => "byte",
+            SpecialType.System_Int16 => "short",
+            SpecialType.System_UInt16 => "ushort",
+            SpecialType.System_Int32 => "int",
+            SpecialType.System_UInt32 => "uint",
+            SpecialType.System_Int64 => "long",
+            SpecialType.System_UInt64 => "ulong",
+            SpecialType.System_Single => "float",
+            SpecialType.System_Double => "double",
+            SpecialType.System_Decimal => "decimal",
+            _ => null
+        };
+        if (keyword is not null) return keyword;
+        if (type is IArrayTypeSymbol array)
+        {
+            var element = CSharpTypeName(array.ElementType);
+            return element is null ? null : element + "[" + new string(',', array.Rank - 1) + "]";
+        }
+        if (type is ITypeParameterSymbol parameter) return parameter.Name;
+        if (type is not INamedTypeSymbol named || named.TypeKind == TypeKind.Error || named.IsAnonymousType) return null;
+        if (named.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T && named.TypeArguments.Length == 1)
+            return CSharpTypeName(named.TypeArguments[0]) is { } nullableElement ? nullableElement + "?" : null;
+
+        string prefix;
+        if (named.ContainingType is not null)
+        {
+            var containing = CSharpTypeName(named.ContainingType);
+            if (containing is null) return null;
+            prefix = containing + ".";
+        }
+        else
+        {
+            var namespaceName = named.ContainingNamespace?.ToDisplayString();
+            prefix = string.IsNullOrEmpty(namespaceName) ? "" : "global::" + namespaceName + ".";
+        }
+        if (named.Arity == 0) return prefix + named.Name;
+        var arguments = named.TypeArguments.Skip(named.TypeArguments.Length - named.Arity)
+            .Select(CSharpTypeName).ToArray();
+        return arguments.Any(x => x is null)
+            ? null
+            : prefix + named.Name + "<" + string.Join(", ", arguments!) + ">";
+    }
 
     /// <summary>ソース識別子および既に生成した名前と衝突しない一時変数名を作成します。</summary>
     private string CreateUniqueTemporaryName(string baseName)
@@ -457,14 +643,28 @@ public sealed class VbToCSharpConverter
         if (expression is MemberAccessExpressionSyntax member &&
             property is not null && string.Equals(member.Name.Identifier.ValueText, property.Name, StringComparison.OrdinalIgnoreCase) &&
             string.Equals(property.Name, "Item", StringComparison.OrdinalIgnoreCase))
+        {
+            if (HasOmittedWithReceiver(member))
+                return _withTargets.Count > 0 ? _withTargets.Peek() : UnsupportedExpression(member);
             return Expr(member.Expression, true);
+        }
         return Expr(expression, true);
     }
 
     /// <summary>メンバーアクセスを変換し、引数なしメソッドには呼び出し括弧を追加します。</summary>
     private string Member(MemberAccessExpressionSyntax node, bool suppressImplicitCall)
     {
-        var value = $"{Expr(node.Expression)}.{node.Name.Identifier.ValueText}";
+        string receiver;
+        if (HasOmittedWithReceiver(node))
+        {
+            if (_withTargets.Count == 0) return UnsupportedExpression(node);
+            receiver = _withTargets.Peek();
+        }
+        else
+        {
+            receiver = Expr(node.Expression);
+        }
+        var value = $"{receiver}.{node.Name.Identifier.ValueText}";
         if (suppressImplicitCall) return value;
         var classification = _classifier.ClassifyExpression(node, _model);
         if (classification.Symbol is IMethodSymbol { Parameters.Length: 0 } && classification.Meaning == ExpressionMeaning.Method)

@@ -44,6 +44,8 @@ VBの`Is`／`IsNot`による参照同一性比較は、演算子オーバーロ�
 
 通常の`Try`／`Catch`／`Finally`、複数Catch、`Catch When`をC#の例外処理へ変換します。組み込み数値型の`For`は開始値、終了値、Step値の評価回数を維持するため一時変数を生成し、正負どちらのStepにも対応します。`Exit For`と`Continue For`もそれぞれ`break`と`continue`へ変換します。Object型やユーザー定義変換など安全性を確定できないForは`ManualReviewRequired`に残します。
 
+`For Each`は列挙情報と要素変換をSemanticModelで確認し、内部用の反復変数を介して変換します。これにより、VB側の制御変数への再代入と、宣言済み変数に最後の要素が残る動作を維持します。参照型を対象とする`With`は対象式を一度だけ評価する一時変数へ展開し、入れ子、メソッド、プロパティ、Indexerに対応します。値型Withは読み取り専用の場合だけ変換します。
+
 ## 設計上の境界
 
 この実装は誤変換回避を優先します。主要な型・メソッド・プロパティ・式・宣言・条件分岐は変換しますが、イベント、LINQ query syntax、複雑な制御構文など未対応の VB 構文はレビュー対象です。`.sln/.vbproj` 入力では `MSBuildWorkspace` が ProjectReference、DLL/NuGet/Framework 参照、Imports、Define、RootNamespace 等をロードします。フォルダ/単一ファイル入力では .NET 8 の platform assemblies のみを参照します。

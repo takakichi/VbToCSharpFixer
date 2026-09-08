@@ -40,9 +40,17 @@
 | `WriteCatchBlock` | Catchの例外型、変数、Whenフィルターと本体を変換する |
 | `CatchType` | Catch例外型をGlobal Importsに依存しない完全修飾名へ変換する |
 | `WriteForBlock` | 境界値とStepを一度だけ評価するC#数値ループを出力する |
+| `WriteForEachBlock` | 列挙情報と制御変数の動作を維持してC# foreachを出力する |
+| `TryGetForEachControl` | For Eachの宣言付き／宣言済み制御変数を意味解析する |
+| `CanSafelyEnumerate` | 列挙型と要素変換をC#で安全に表現できるか判定する |
+| `WriteWithBlock` | With対象を一度だけ評価して先頭ドットの参照を展開する |
+| `IsReadOnlyValueTypeWith` | 値型Withの本体が読み取り専用か保守的に判定する |
+| `IsWithBasedExpression` | 式がWith対象を起点とするか判定する |
+| `HasOmittedWithReceiver` | 先頭ドットで受信側が省略されたメンバーか判定する |
 | `TryGetForControl` | For制御変数と組み込み数値型を安全に解決する |
 | `CanAssignForValue` | Forの開始値、終了値、Step値が縮小変換なしで代入可能か判定する |
 | `CSharpNumericType` | For対応数値型をC#キーワードへ対応付ける |
+| `CSharpTypeName` | 型シンボルをGlobal Importsに依存しないC#型名へ変換する |
 | `CreateUniqueTemporaryName` | For用一時変数の衝突しない名前を生成する |
 | `MethodSignature` | C#メソッドシグネチャを生成する |
 | `WriteProperty` | PropertyとAccessorを出力する |

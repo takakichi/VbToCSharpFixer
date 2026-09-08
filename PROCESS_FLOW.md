@@ -129,6 +129,23 @@ Strings.Mid(text, 1, 3);
 5. `Exit For`を`break`、`Continue For`を`continue`へ変換する
 6. Object、ユーザー定義変換、縮小変換などはManualReviewRequiredにする
 
+### For Each
+
+1. 列挙対象と要素型をSemanticModelで解決する
+2. Late Bindingやユーザー定義変換を除外する
+3. 衝突しない内部反復変数を生成する
+4. 宣言付き変数はループ内で宣言し、宣言済み変数は各反復で代入する
+5. `Exit For`と`Continue For`を既存の`break`と`continue`変換へ渡す
+
+### With
+
+1. With対象型をSemanticModelで解決する
+2. 対象式を衝突しない一時変数へ一度だけ代入する
+3. 先頭ドットのメンバーを現在のWith対象へ結び付ける
+4. 入れ子ではWith対象をスタック管理する
+5. 参照型は変換し、値型は読み取り専用の場合だけ変換する
+6. Late Bindingや値型の書き換えはManualReviewRequiredにする
+
 ## 8. 検証フロー
 
 ### Syntax検証

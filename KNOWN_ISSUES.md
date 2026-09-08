@@ -7,8 +7,8 @@
 ## 2. 未対応または限定対応のVB構文
 
 - Event、Delegate、`Handles`、`WithEvents`
-- `With`ブロック
-- Object／Late Binding／ユーザー定義変換を使用するFor、For Each、While、Do Loop
+- Object／Late Bindingまたは値型を書き換える`With`ブロック
+- Object／Late Binding／ユーザー定義変換を使用するFor／For Each、While、Do Loop
 - `Select Case`
 - `Exit Try`、`On Error`、`Resume`
 - LINQ query syntax
