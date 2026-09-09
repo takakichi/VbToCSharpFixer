@@ -35,6 +35,9 @@
 | `ConvertExpression` | 単一式をC#表現へ変換する |
 | `WriteStatement` | VBステートメントを種類別に出力する |
 | `WriteType` | Class、Structure、Interface、Moduleを出力する |
+| `WriteEnum` | Enumの属性、基底型、メンバーおよび初期値を出力する |
+| `WriteAttributes` | VB属性リストをC#属性として出力する |
+| `Attribute` | 属性の位置引数と名前付き引数をC#表現へ変換する |
 | `WriteMethod` | メソッドブロックを出力する |
 | `WriteTryBlock` | Try、Catch、Finallyを同じ順序のC#例外処理へ変換する |
 | `WriteCatchBlock` | Catchの例外型、変数、Whenフィルターと本体を変換する |
@@ -61,7 +64,11 @@
 | `IndexerTarget` | ItemプロパティをC# Indexer対象へ変換する |
 | `Member` | MemberAccessと引数なしMethodを変換する |
 | `Identifier` | Identifierと暗黙Method呼び出しを変換する |
-| `Arguments` | 引数リストを変換する |
+| `Arguments` | 引数リストを変換し、必要なEnum変換を適用する |
+| `ObjectCreation` | Object生成式とコンストラクター引数を変換する |
+| `PredefinedCast` | CInt、CStrなどをVB互換Conversions呼び出しへ変換する |
+| `ExprForTarget` | Enumと整数型間で必要な明示キャストを追加する |
+| `IsInsideDeclaringEnum` | Enum初期値内の同一Enumメンバー参照か判定する |
 | `Literal` | VBリテラルをC#リテラルへ変換する |
 | `StringLiteral` | 実タブを維持して安全なC#文字列リテラルを生成する |
 | `Type` | VB型構文をC#型表現へ変換する |
@@ -72,6 +79,11 @@
 | `Binary` | `Is`／`IsNot`を含む二項式を意味に応じて変換する |
 | `BinaryOperator` | 二項演算子を変換する |
 | `UnaryOperator` | 単項演算子を変換する |
+| `Unary` | BooleanのNotとEnum／整数のビット反転を区別して変換する |
+| `IsIntegral` | 型がC#整数型か判定する |
+| `EnumTypeName` | Enum型の正式名をC#表現で生成する |
+| `TypeName` | 型シンボルをC#型名へ変換する |
+| `EscapeIdentifier` | C#予約語と一致する識別子をエスケープする |
 | `UnsupportedExpression` | 未対応式をManualReviewRequiredにする |
 | `Record` | FixResultを記録する |
 | `Review` | ManualReviewItemを記録する |

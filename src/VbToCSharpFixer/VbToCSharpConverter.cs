@@ -1,7 +1,9 @@
+using System.Collections.Immutable;
 using System.Text;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.VisualBasic;
 using Microsoft.CodeAnalysis.VisualBasic.Syntax;
+using CSharpSyntaxFacts = Microsoft.CodeAnalysis.CSharp.SyntaxFacts;
 using VBSyntaxKind = Microsoft.CodeAnalysis.VisualBasic.SyntaxKind;
 
 namespace VbToCSharpFixer;
@@ -112,6 +114,9 @@ public sealed class VbToCSharpConverter
             case ModuleBlockSyntax m:
                 WriteType(m.ModuleStatement, m.Members, "static class", output);
                 break;
+            case EnumBlockSyntax e:
+                WriteEnum(e, output);
+                break;
             case MethodBlockSyntax m:
                 WriteMethod(m, output);
                 break;
@@ -131,7 +136,7 @@ public sealed class VbToCSharpConverter
                 WriteDeclaration("", l.Declarators, output, false);
                 break;
             case AssignmentStatementSyntax a:
-                Line(output, $"{Expr(a.Left)} {AssignmentOperator(a.Kind())} {Expr(a.Right)};");
+                Line(output, $"{Expr(a.Left)} {AssignmentOperator(a.Kind())} {ExprForTarget(a.Right, _model.GetTypeInfo(a.Left).Type)};");
                 break;
             case ExpressionStatementSyntax e:
                 Line(output, Expr(e.Expression) + ";");
@@ -140,7 +145,8 @@ public sealed class VbToCSharpConverter
                 Line(output, Expr(c.Invocation) + ";");
                 break;
             case ReturnStatementSyntax r:
-                Line(output, r.Expression is null ? "return;" : $"return {Expr(r.Expression)};");
+                var method = _model.GetEnclosingSymbol(r.SpanStart) as IMethodSymbol;
+                Line(output, r.Expression is null ? "return;" : $"return {ExprForTarget(r.Expression, method?.ReturnType)};");
                 break;
             case ThrowStatementSyntax t:
                 Line(output, t.Expression is null ? "throw;" : $"throw {Expr(t.Expression)};");
@@ -197,6 +203,63 @@ public sealed class VbToCSharpConverter
         };
         Line(output, $"{access}{keyword} {type.Identifier.ValueText}{inheritance}".TrimStart());
         Block(output, () => { foreach (var m in members) WriteStatement(m, output); });
+    }
+
+    /// <summary>VBのEnum宣言、基底型、属性および各列挙値をC#として出力します。</summary>
+    private void WriteEnum(EnumBlockSyntax block, StringBuilder output)
+    {
+        var statement = block.EnumStatement;
+        WriteAttributes(statement.AttributeLists, output);
+        var symbol = _model.GetDeclaredSymbol(statement) as INamedTypeSymbol;
+        var name = EscapeIdentifier(symbol?.Name ?? statement.Identifier.ValueText);
+        var underlyingType = statement.UnderlyingType is null ? "" : " : " + Type(statement.UnderlyingType.Type());
+        Line(output, $"{Access(statement.Modifiers)}enum {name}{underlyingType}".TrimStart());
+        Line(output, "{");
+        _indent++;
+        var members = block.Members.OfType<EnumMemberDeclarationSyntax>().ToArray();
+        for (var index = 0; index < members.Length; index++)
+        {
+            var member = members[index];
+            WriteLeadingComments(member, output);
+            WriteAttributes(member.AttributeLists, output);
+            var memberSymbol = _model.GetDeclaredSymbol(member) as IFieldSymbol;
+            var memberName = EscapeIdentifier(memberSymbol?.Name ?? member.Identifier.ValueText);
+            var initializer = member.Initializer is null ? "" : " = " + Expr(member.Initializer.Value);
+            Line(output, $"{memberName}{initializer}{(index + 1 < members.Length ? "," : "")}");
+        }
+        _indent--;
+        Line(output, "}");
+    }
+
+    /// <summary>VB属性リストをC#属性として出力します。</summary>
+    private void WriteAttributes(SyntaxList<AttributeListSyntax> lists, StringBuilder output)
+    {
+        foreach (var list in lists)
+            Line(output, "[" + string.Join(", ", list.Attributes.Select(Attribute)) + "]");
+    }
+
+    /// <summary>VB属性の名前、位置引数および名前付き引数をC#表現へ変換します。</summary>
+    private string Attribute(AttributeSyntax attribute)
+    {
+        var symbol = _model.GetSymbolInfo(attribute).Symbol as IMethodSymbol;
+        var name = (symbol?.ContainingType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)
+            ?? attribute.Name.ToString()).Replace("Global.", "global::", StringComparison.Ordinal);
+        if (attribute.ArgumentList is null) return name;
+        var arguments = attribute.ArgumentList.Arguments.Select(argument =>
+        {
+            if (argument is not SimpleArgumentSyntax simple) return argument.ToString();
+            if (simple.NameColonEquals is null) return Expr(simple.Expression);
+            var requestedName = simple.NameColonEquals.Name.Identifier.ValueText;
+            var constructorParameter = symbol?.Parameters.FirstOrDefault(x => x.Name.Equals(requestedName, StringComparison.OrdinalIgnoreCase));
+            if (constructorParameter is not null)
+                return $"{EscapeIdentifier(constructorParameter.Name)}: {ExprForTarget(simple.Expression, constructorParameter.Type)}";
+            var namedMember = symbol?.ContainingType.GetMembers()
+                .FirstOrDefault(x => x.Name.Equals(requestedName, StringComparison.OrdinalIgnoreCase) && x is IFieldSymbol or IPropertySymbol);
+            var memberName = EscapeIdentifier(namedMember?.Name ?? requestedName);
+            var memberType = namedMember switch { IFieldSymbol field => field.Type, IPropertySymbol property => property.Type, _ => null };
+            return $"{memberName} = {ExprForTarget(simple.Expression, memberType)}";
+        });
+        return $"{name}({string.Join(", ", arguments)})";
     }
 
     /// <summary>VBメソッドブロックをC#メソッドとして出力します。</summary>
@@ -570,7 +633,14 @@ public sealed class VbToCSharpConverter
                 var type = Type(d.AsClause?.Type());
                 if (!field && d.AsClause is null && d.Initializer is not null) type = "var";
                 var prefix = field ? AccessText(modifierText) : "";
-                var init = d.Initializer is null ? "" : " = " + Expr(d.Initializer.Value);
+                var declared = _model.GetDeclaredSymbol(name);
+                var targetType = declared switch
+                {
+                    ILocalSymbol local => local.Type,
+                    IFieldSymbol declaredField => declaredField.Type,
+                    _ => null
+                };
+                var init = d.Initializer is null ? "" : " = " + ExprForTarget(d.Initializer.Value, targetType);
                 Line(output, $"{prefix}{type} {name.Identifier.ValueText}{init};".TrimStart());
             }
         }
@@ -589,8 +659,9 @@ public sealed class VbToCSharpConverter
             LiteralExpressionSyntax literal => Literal(literal),
             ParenthesizedExpressionSyntax p => $"({Expr(p.Expression)})",
             BinaryExpressionSyntax b => Binary(b),
-            UnaryExpressionSyntax u => $"{UnaryOperator(u.Kind())}{Expr(u.Operand)}",
-            ObjectCreationExpressionSyntax o => $"new {Type(o.Type)}({Arguments(o.ArgumentList)})",
+            UnaryExpressionSyntax u => Unary(u),
+            ObjectCreationExpressionSyntax o => ObjectCreation(o),
+            PredefinedCastExpressionSyntax c => PredefinedCast(c),
             CTypeExpressionSyntax c => $"({Type(c.Type)}){Expr(c.Expression)}",
             DirectCastExpressionSyntax c => $"({Type(c.Type)}){Expr(c.Expression)}",
             TryCastExpressionSyntax c => $"{Expr(c.Expression)} as {Type(c.Type)}",
@@ -604,7 +675,13 @@ public sealed class VbToCSharpConverter
     private string Invocation(InvocationExpressionSyntax node)
     {
         var classification = _classifier.ClassifyInvocation(node, _model);
-        var args = Arguments(node.ArgumentList);
+        var parameters = classification.Symbol switch
+        {
+            IMethodSymbol method => method.Parameters,
+            IPropertySymbol property => property.Parameters,
+            _ => default
+        };
+        var args = Arguments(node.ArgumentList, parameters);
         string after;
         FixType fixType;
         switch (classification.Meaning)
@@ -664,7 +741,11 @@ public sealed class VbToCSharpConverter
         {
             receiver = Expr(node.Expression);
         }
-        var value = $"{receiver}.{node.Name.Identifier.ValueText}";
+        var symbol = _model.GetSymbolInfo(node).Symbol;
+        var memberName = symbol is IFieldSymbol { ContainingType.TypeKind: TypeKind.Enum } enumField
+            ? EscapeIdentifier(enumField.Name)
+            : EscapeIdentifier(node.Name.Identifier.ValueText);
+        var value = $"{receiver}.{memberName}";
         if (suppressImplicitCall) return value;
         var classification = _classifier.ClassifyExpression(node, _model);
         if (classification.Symbol is IMethodSymbol { Parameters.Length: 0 } && classification.Meaning == ExpressionMeaning.Method)
@@ -681,9 +762,18 @@ public sealed class VbToCSharpConverter
     /// <summary>識別子を変換し、暗黙の引数なしメソッド呼び出しを補正します。</summary>
     private string Identifier(IdentifierNameSyntax node, bool suppressImplicitCall)
     {
-        var name = node.Identifier.ValueText switch { "Me" => "this", "MyBase" => "base", var x => x };
+        var name = node.Identifier.ValueText switch { "Me" => "this", "MyBase" => "base", var x => EscapeIdentifier(x) };
         if (suppressImplicitCall) return name;
         var classification = _classifier.ClassifyExpression(node, _model);
+        var resolvedSymbol = classification.Symbol ?? _model.GetSymbolInfo(node).Symbol;
+        if (resolvedSymbol is INamedTypeSymbol { TypeKind: TypeKind.Enum } enumType)
+            return EnumTypeName(enumType);
+        if (resolvedSymbol is IFieldSymbol { ContainingType.TypeKind: TypeKind.Enum } enumField)
+        {
+            var memberName = EscapeIdentifier(enumField.Name);
+            if (IsInsideDeclaringEnum(node, enumField)) return memberName;
+            return $"{EnumTypeName(enumField.ContainingType)}.{memberName}";
+        }
         if (classification.Symbol is { } symbol && IsVisualBasicRuntimeValueMember(symbol))
         {
             var after = $"{VisualBasicRuntimeTypeAccess(symbol.ContainingType)}.{symbol.Name}";
@@ -702,8 +792,84 @@ public sealed class VbToCSharpConverter
     }
 
     /// <summary>VB引数リスト内の各式をC#へ変換して連結します。</summary>
-    private string Arguments(ArgumentListSyntax? list) => list is null ? "" :
-        string.Join(", ", list.Arguments.Select(a => a is SimpleArgumentSyntax s ? Expr(s.Expression) : a.ToString()));
+    private string Arguments(ArgumentListSyntax? list, ImmutableArray<IParameterSymbol> parameters = default)
+    {
+        if (list is null) return "";
+        return string.Join(", ", list.Arguments.Select((argument, index) =>
+        {
+            if (argument is not SimpleArgumentSyntax simple) return argument.ToString();
+            IParameterSymbol? parameter = null;
+            if (!parameters.IsDefaultOrEmpty)
+            {
+                parameter = simple.NameColonEquals is not null
+                    ? parameters.FirstOrDefault(x => x.Name.Equals(simple.NameColonEquals.Name.Identifier.ValueText, StringComparison.OrdinalIgnoreCase))
+                    : parameters[Math.Min(index, parameters.Length - 1)];
+            }
+            var targetType = parameter is { IsParams: true, Type: IArrayTypeSymbol array } && index >= parameters.Length - 1
+                ? array.ElementType : parameter?.Type;
+            var prefix = simple.NameColonEquals is null ? "" : EscapeIdentifier(simple.NameColonEquals.Name.Identifier.ValueText) + ": ";
+            return prefix + ExprForTarget(simple.Expression, targetType);
+        }));
+    }
+
+    /// <summary>Object生成式のコンストラクター引数にも必要なEnum変換を適用します。</summary>
+    private string ObjectCreation(ObjectCreationExpressionSyntax expression)
+    {
+        var constructor = _model.GetSymbolInfo(expression).Symbol as IMethodSymbol;
+        return $"new {Type(expression.Type)}({Arguments(expression.ArgumentList, constructor?.Parameters ?? default)})";
+    }
+
+    /// <summary>CIntやCStrなどのVB組み込み変換をConversionsクラス呼び出しへ変換します。</summary>
+    private string PredefinedCast(PredefinedCastExpressionSyntax expression)
+    {
+        var method = expression.Keyword.ValueText.ToUpperInvariant() switch
+        {
+            "CBOOL" => "ToBoolean", "CBYTE" => "ToByte", "CSBYTE" => "ToSByte",
+            "CSHORT" => "ToShort", "CUSHORT" => "ToUShort", "CINT" => "ToInteger",
+            "CUINT" => "ToUInteger", "CLNG" => "ToLong", "CULNG" => "ToULong",
+            "CSNG" => "ToSingle", "CDBL" => "ToDouble", "CDEC" => "ToDecimal",
+            "CCHAR" => "ToChar", "CDATE" => "ToDate", "CSTR" => "ToString",
+            "COBJ" => null,
+            _ => ""
+        };
+        var value = expression.Expression.IsKind(VBSyntaxKind.NothingLiteralExpression)
+            ? "(object)null" : Expr(expression.Expression);
+        if (method is null) return $"(object)({value})";
+        if (method.Length == 0) return UnsupportedExpression(expression);
+        var conversions = _model.Compilation.GetTypeByMetadataName("Microsoft.VisualBasic.CompilerServices.Conversions");
+        if (conversions is null)
+        {
+            Review(expression, ReasonCode.MissingReference, "Microsoft.VisualBasic.CompilerServices.Conversions could not be resolved.");
+            return $"/* ManualReviewRequired */ {expression}";
+        }
+        var after = $"{VisualBasicRuntimeTypeAccess(conversions)}.{method}({value})";
+        Record(expression, FixType.VbRuntimeCall, after,
+            new SymbolClassification(ExpressionMeaning.Value, conversions, _model.GetTypeInfo(expression).Type,
+                $"VB predefined conversion {expression.Keyword.ValueText} mapped to Conversions.{method}"));
+        return after;
+    }
+
+    /// <summary>Enumと整数型の間でC#に明示変換が必要な場合だけキャストを追加します。</summary>
+    private string ExprForTarget(ExpressionSyntax expression, ITypeSymbol? targetType)
+    {
+        var value = Expr(expression);
+        if (targetType is null) return value;
+        var sourceType = _model.GetTypeInfo(expression).Type;
+        if (sourceType is null || SymbolEqualityComparer.Default.Equals(sourceType, targetType)) return value;
+        if (targetType.TypeKind == TypeKind.Enum && IsIntegral(sourceType))
+            return $"({EnumTypeName((INamedTypeSymbol)targetType)})({value})";
+        if (sourceType.TypeKind == TypeKind.Enum && IsIntegral(targetType))
+            return $"({TypeName(targetType)})({value})";
+        return value;
+    }
+
+    /// <summary>Enumメンバー参照が同じEnum宣言の初期化式内にあるか判定します。</summary>
+    private bool IsInsideDeclaringEnum(SyntaxNode node, IFieldSymbol field)
+    {
+        var block = node.Ancestors().OfType<EnumBlockSyntax>().FirstOrDefault();
+        var containing = block is null ? null : _model.GetDeclaredSymbol(block.EnumStatement);
+        return SymbolEqualityComparer.Default.Equals(containing, field.ContainingType);
+    }
 
     /// <summary>VBリテラルを対応するC#リテラル表現へ変換します。</summary>
     private static string Literal(LiteralExpressionSyntax literal) => literal.Kind() switch
@@ -746,26 +912,38 @@ public sealed class VbToCSharpConverter
     }
 
     /// <summary>VB型構文をC#の組み込み型、Genericまたは配列型表現へ変換します。</summary>
-    private static string Type(TypeSyntax? type) => type switch
+    private string Type(TypeSyntax? type)
     {
-        null => "object",
-        PredefinedTypeSyntax p => p.Keyword.Kind() switch
+        if (type is not null)
         {
-            VBSyntaxKind.StringKeyword => "string", VBSyntaxKind.IntegerKeyword => "int",
-            VBSyntaxKind.LongKeyword => "long", VBSyntaxKind.ShortKeyword => "short",
-            VBSyntaxKind.BooleanKeyword => "bool", VBSyntaxKind.ObjectKeyword => "object",
-            VBSyntaxKind.DecimalKeyword => "decimal", VBSyntaxKind.DoubleKeyword => "double",
-            VBSyntaxKind.SingleKeyword => "float", VBSyntaxKind.ByteKeyword => "byte",
-            VBSyntaxKind.CharKeyword => "char", VBSyntaxKind.DateKeyword => "DateTime",
-            _ => p.Keyword.ValueText
-        },
-        GenericNameSyntax g => $"{g.Identifier.ValueText}<{string.Join(", ", g.TypeArgumentList.Arguments.Select(Type))}>",
-        ArrayTypeSyntax a => Type(a.ElementType) + string.Concat(a.RankSpecifiers.Select(r => "[" + new string(',', r.Rank - 1) + "]")),
-        _ => type.ToString().Replace("Global.", "global::", StringComparison.Ordinal)
-    };
+            var resolvedType = _model.GetTypeInfo(type).Type ?? _model.GetSymbolInfo(type).Symbol as ITypeSymbol;
+            if (resolvedType is INamedTypeSymbol { TypeKind: TypeKind.Enum } enumType)
+                return EnumTypeName(enumType);
+        }
+        return type switch
+        {
+            null => "object",
+            PredefinedTypeSyntax p => p.Keyword.Kind() switch
+            {
+                VBSyntaxKind.StringKeyword => "string", VBSyntaxKind.IntegerKeyword => "int",
+                VBSyntaxKind.LongKeyword => "long", VBSyntaxKind.ShortKeyword => "short",
+                VBSyntaxKind.ULongKeyword => "ulong", VBSyntaxKind.UIntegerKeyword => "uint",
+                VBSyntaxKind.UShortKeyword => "ushort", VBSyntaxKind.SByteKeyword => "sbyte",
+                VBSyntaxKind.BooleanKeyword => "bool", VBSyntaxKind.ObjectKeyword => "object",
+                VBSyntaxKind.DecimalKeyword => "decimal", VBSyntaxKind.DoubleKeyword => "double",
+                VBSyntaxKind.SingleKeyword => "float", VBSyntaxKind.ByteKeyword => "byte",
+                VBSyntaxKind.CharKeyword => "char", VBSyntaxKind.DateKeyword => "global::System.DateTime",
+                _ => p.Keyword.ValueText
+            },
+            GenericNameSyntax g => $"{g.Identifier.ValueText}<{string.Join(", ", g.TypeArgumentList.Arguments.Select(Type))}>",
+            ArrayTypeSyntax a => Type(a.ElementType) + string.Concat(a.RankSpecifiers.Select(r => "[" + new string(',', r.Rank - 1) + "]")),
+            IdentifierNameSyntax identifier => EscapeIdentifier(identifier.Identifier.ValueText),
+            _ => type.ToString().Replace("Global.", "global::", StringComparison.Ordinal)
+        };
+    }
 
     /// <summary>VBパラメーターをByRef指定を含むC#パラメーターへ変換します。</summary>
-    private static string Parameter(ParameterSyntax p)
+    private string Parameter(ParameterSyntax p)
     {
         var modifier = p.Modifiers.Any(VBSyntaxKind.ByRefKeyword) ? "ref " : "";
         return $"{modifier}{Type(p.AsClause?.Type())} {p.Identifier.Identifier.ValueText}";
@@ -797,7 +975,13 @@ public sealed class VbToCSharpConverter
             var comparison = $"object.ReferenceEquals({Expr(expression.Left)}, {Expr(expression.Right)})";
             return expression.IsKind(VBSyntaxKind.IsNotExpression) ? "!" + comparison : comparison;
         }
-        return $"{Expr(expression.Left)} {BinaryOperator(expression.Kind())} {Expr(expression.Right)}";
+        var leftType = _model.GetTypeInfo(expression.Left).Type;
+        var rightType = _model.GetTypeInfo(expression.Right).Type;
+        var left = rightType?.TypeKind == TypeKind.Enum && leftType is not null && IsIntegral(leftType)
+            ? ExprForTarget(expression.Left, rightType) : Expr(expression.Left);
+        var right = leftType?.TypeKind == TypeKind.Enum && rightType is not null && IsIntegral(rightType)
+            ? ExprForTarget(expression.Right, leftType) : Expr(expression.Right);
+        return $"{left} {BinaryOperator(expression.Kind())} {right}";
     }
 
     /// <summary>VB二項演算子を対応するC#演算子へ変換します。</summary>
@@ -806,6 +990,8 @@ public sealed class VbToCSharpConverter
         VBSyntaxKind.EqualsExpression => "==", VBSyntaxKind.NotEqualsExpression => "!=",
         VBSyntaxKind.AndAlsoExpression => "&&", VBSyntaxKind.OrElseExpression => "||",
         VBSyntaxKind.AndExpression => "&", VBSyntaxKind.OrExpression => "|",
+        VBSyntaxKind.ExclusiveOrExpression => "^", VBSyntaxKind.LeftShiftExpression => "<<",
+        VBSyntaxKind.RightShiftExpression => ">>",
         VBSyntaxKind.ModuloExpression => "%", VBSyntaxKind.ConcatenateExpression => "+",
         _ => kind switch
         {
@@ -821,6 +1007,54 @@ public sealed class VbToCSharpConverter
     {
         VBSyntaxKind.NotExpression => "!", VBSyntaxKind.UnaryMinusExpression => "-", _ => "+"
     };
+
+    /// <summary>NotをBooleanの論理否定またはEnum・整数のビット反転として意味的に変換します。</summary>
+    private string Unary(UnaryExpressionSyntax expression)
+    {
+        var operation = UnaryOperator(expression.Kind());
+        if (expression.IsKind(VBSyntaxKind.NotExpression))
+        {
+            var type = _model.GetTypeInfo(expression.Operand).Type;
+            if (type?.TypeKind == TypeKind.Enum || type is not null && IsIntegral(type)) operation = "~";
+        }
+        return operation + Expr(expression.Operand);
+    }
+
+    /// <summary>列挙型を含む整数型か判定します。</summary>
+    private static bool IsIntegral(ITypeSymbol type) => type.SpecialType is
+        SpecialType.System_SByte or SpecialType.System_Byte or
+        SpecialType.System_Int16 or SpecialType.System_UInt16 or
+        SpecialType.System_Int32 or SpecialType.System_UInt32 or
+        SpecialType.System_Int64 or SpecialType.System_UInt64;
+
+    /// <summary>C#コード中で使用するEnum型名を正式な大文字・小文字で返します。</summary>
+    private static string EnumTypeName(INamedTypeSymbol type)
+    {
+        var names = new Stack<string>();
+        for (var current = type; current is not null; current = current.ContainingType)
+        {
+            var arguments = current.TypeArguments.Length == 0
+                ? "" : "<" + string.Join(", ", current.TypeArguments.Select(TypeName)) + ">";
+            names.Push(EscapeIdentifier(current.Name) + arguments);
+        }
+        return string.Join(".", names);
+    }
+
+    /// <summary>型シンボルをC#の組み込み型名または最小修飾型名へ変換します。</summary>
+    private static string TypeName(ITypeSymbol type) => type.SpecialType switch
+    {
+        SpecialType.System_SByte => "sbyte", SpecialType.System_Byte => "byte",
+        SpecialType.System_Int16 => "short", SpecialType.System_UInt16 => "ushort",
+        SpecialType.System_Int32 => "int", SpecialType.System_UInt32 => "uint",
+        SpecialType.System_Int64 => "long", SpecialType.System_UInt64 => "ulong",
+        _ => type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat)
+    };
+
+    /// <summary>C#予約語と一致する識別子を@付き識別子へ変換します。</summary>
+    private static string EscapeIdentifier(string name) =>
+        CSharpSyntaxFacts.GetKeywordKind(name) != Microsoft.CodeAnalysis.CSharp.SyntaxKind.None ||
+        CSharpSyntaxFacts.GetContextualKeywordKind(name) != Microsoft.CodeAnalysis.CSharp.SyntaxKind.None
+            ? "@" + name : name;
 
     /// <summary>未対応式をManualReviewRequiredとして記録し、安全なプレースホルダーを返します。</summary>
     private string UnsupportedExpression(ExpressionSyntax node)

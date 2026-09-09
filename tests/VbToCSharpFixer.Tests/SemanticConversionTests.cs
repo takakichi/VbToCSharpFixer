@@ -1005,6 +1005,202 @@ End Class
         Assert.That(actual, Is.EqualTo("s.GetValue(1)"));
     }
 
+    /// <summary>Enum宣言、属性、正式なメンバー名、Flags演算および整数変換をC#へ変換します。</summary>
+    [Test]
+    public void Converts_enum_blocks_and_enum_value_references()
+    {
+        var source = """
+Imports System
+<Flags>
+Public Enum Status As Integer
+    None = 0
+    Ready = 1
+    ErrorState = 2
+    All = Ready Or ErrorState
+    Mask = &HFF
+    Negative = -1
+End Enum
+
+Public Class EnumUsage
+    Public Function Accept(value As Status) As Status
+        Return value
+    End Function
+
+    Public Function Run(value As Status) As Integer
+        Dim fromNumber As Status = 1
+        Dim canonical = Status.ready
+        Dim combined = (fromNumber Or canonical) Xor Status.ErrorState
+        Dim inverted = Not combined
+        Dim passed = Accept(2)
+        Return passed
+    End Function
+End Class
+""";
+        var tree = VisualBasicSyntaxTree.ParseText(source, path: "enum.vb");
+        var compilation = CreateCompilation(tree);
+        var errors = compilation.GetDiagnostics().Where(x => x.Severity == DiagnosticSeverity.Error).ToArray();
+        Assert.That(errors, Is.Empty, string.Join("\n", errors.Select(x => x.ToString())));
+
+        var result = new VbToCSharpConverter().Convert(tree, compilation.GetSemanticModel(tree), "Test");
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(result.CSharp, Does.Contain("[global::System.FlagsAttribute]"));
+            Assert.That(result.CSharp, Does.Contain("public enum Status : int"));
+            Assert.That(result.CSharp, Does.Contain("All = Ready | ErrorState"));
+            Assert.That(result.CSharp, Does.Contain("Mask = 255"));
+            Assert.That(result.CSharp, Does.Contain("Negative = -1"));
+            Assert.That(result.CSharp, Does.Contain("var canonical = Status.Ready;"));
+            Assert.That(result.CSharp, Does.Contain("var combined = (fromNumber | canonical) ^ Status.ErrorState;"));
+            Assert.That(result.CSharp, Does.Contain("var inverted = ~combined;"));
+            Assert.That(result.CSharp, Does.Contain("Accept((Status)(2))"));
+            Assert.That(result.CSharp, Does.Not.Contain("unsupported EnumBlock"));
+        });
+        AssertGeneratedCompiles(result, compilation, "EnumConversion");
+    }
+
+    /// <summary>Enum名とメンバー名がC#予約語の場合に宣言と参照を同じ名前へエスケープします。</summary>
+    [Test]
+    public void Escapes_csharp_keywords_in_enum_declarations_and_references()
+    {
+        var source = """
+Public Enum [class]
+    [event] = 1
+End Enum
+Public Class Usage
+    Public Function Run() As [class]
+        Return [class].[event]
+    End Function
+End Class
+""";
+        var tree = VisualBasicSyntaxTree.ParseText(source, path: "enum-keywords.vb");
+        var compilation = CreateCompilation(tree);
+        var result = new VbToCSharpConverter().Convert(tree, compilation.GetSemanticModel(tree), "Test");
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(result.CSharp, Does.Contain("public enum @class"));
+            Assert.That(result.CSharp, Does.Contain("@event = 1"));
+            Assert.That(result.CSharp, Does.Contain("return @class.@event;"));
+        });
+        AssertGeneratedCompiles(result, compilation, "EnumKeywords");
+    }
+
+    /// <summary>CInt、CStrなどをVB互換Conversions呼び出しへ変換し、VBの丸め動作を維持します。</summary>
+    [Test]
+    public void Converts_predefined_casts_with_visual_basic_conversions()
+    {
+        var source = """
+Public Class CastUsage
+    Public Function ToNumber(value As Double) As Integer
+        Return CInt(value)
+    End Function
+    Public Function ToText(value As Object) As String
+        Return CStr(value)
+    End Function
+    Public Function EmptyText() As String
+        Return CStr(Nothing)
+    End Function
+    Public Function Box(value As Integer) As Object
+        Return CObj(value)
+    End Function
+End Class
+""";
+        var tree = VisualBasicSyntaxTree.ParseText(source, path: "predefined-casts.vb");
+        var compilation = CreateCompilation(tree);
+        var result = new VbToCSharpConverter().Convert(tree, compilation.GetSemanticModel(tree), "Test");
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(result.CSharp, Does.Contain("using VBConversions = global::Microsoft.VisualBasic.CompilerServices.Conversions;"));
+            Assert.That(result.CSharp, Does.Contain("return VBConversions.ToInteger(value);"));
+            Assert.That(result.CSharp, Does.Contain("return VBConversions.ToString(value);"));
+            Assert.That(result.CSharp, Does.Contain("return VBConversions.ToString((object)null);"));
+            Assert.That(result.CSharp, Does.Contain("return (object)(value);"));
+            Assert.That(result.VisualBasicRuntimeTypes, Does.Contain("Microsoft.VisualBasic.CompilerServices.Conversions"));
+        });
+
+        var compiled = CompileAndCreate(result, compilation, "CastUsage");
+        Assert.Multiple(() =>
+        {
+            Assert.That(compiled.Type.GetMethod("ToNumber")!.Invoke(compiled.Instance, [2.5d]), Is.EqualTo(2));
+            Assert.That(compiled.Type.GetMethod("ToNumber")!.Invoke(compiled.Instance, [1.5d]), Is.EqualTo(2));
+            Assert.That(compiled.Type.GetMethod("EmptyText")!.Invoke(compiled.Instance, null), Is.Null);
+        });
+    }
+
+    /// <summary>サポート対象のVB定義済み型変換がすべてConversionsの有効なメソッドへ変換されます。</summary>
+    [Test]
+    public void Converts_all_supported_predefined_casts_to_compilable_calls()
+    {
+        var source = """
+Public Class AllCasts
+    Public Function AsBoolean(value As Object) As Boolean
+        Return CBool(value)
+    End Function
+    Public Function AsByte(value As Object) As Byte
+        Return CByte(value)
+    End Function
+    Public Function AsSByte(value As Object) As SByte
+        Return CSByte(value)
+    End Function
+    Public Function AsShort(value As Object) As Short
+        Return CShort(value)
+    End Function
+    Public Function AsUShort(value As Object) As UShort
+        Return CUShort(value)
+    End Function
+    Public Function AsInteger(value As Object) As Integer
+        Return CInt(value)
+    End Function
+    Public Function AsUInteger(value As Object) As UInteger
+        Return CUInt(value)
+    End Function
+    Public Function AsLong(value As Object) As Long
+        Return CLng(value)
+    End Function
+    Public Function AsULong(value As Object) As ULong
+        Return CULng(value)
+    End Function
+    Public Function AsSingle(value As Object) As Single
+        Return CSng(value)
+    End Function
+    Public Function AsDouble(value As Object) As Double
+        Return CDbl(value)
+    End Function
+    Public Function AsDecimal(value As Object) As Decimal
+        Return CDec(value)
+    End Function
+    Public Function AsChar(value As Object) As Char
+        Return CChar(value)
+    End Function
+    Public Function AsDate(value As Object) As Date
+        Return CDate(value)
+    End Function
+    Public Function AsString(value As Object) As String
+        Return CStr(value)
+    End Function
+    Public Function AsObject(value As Object) As Object
+        Return CObj(value)
+    End Function
+End Class
+""";
+        var tree = VisualBasicSyntaxTree.ParseText(source, path: "all-predefined-casts.vb");
+        var compilation = CreateCompilation(tree);
+        var errors = compilation.GetDiagnostics().Where(x => x.Severity == DiagnosticSeverity.Error).ToArray();
+        Assert.That(errors, Is.Empty, string.Join("\n", errors.Select(x => x.ToString())));
+        var result = new VbToCSharpConverter().Convert(tree, compilation.GetSemanticModel(tree), "Test");
+
+        foreach (var method in new[]
+                 {
+                     "ToBoolean", "ToByte", "ToSByte", "ToShort", "ToUShort", "ToInteger", "ToUInteger",
+                     "ToLong", "ToULong", "ToSingle", "ToDouble", "ToDecimal", "ToChar", "ToDate", "ToString"
+                 })
+            Assert.That(result.CSharp, Does.Contain($"VBConversions.{method}(value)"));
+        Assert.That(result.CSharp, Does.Contain("(object)(value)"));
+        AssertGeneratedCompiles(result, compilation, "AllPredefinedCasts");
+    }
+
     /// <summary>VBソースの最後の初期化式と対応するSemanticModelを返します。</summary>
     private static (ExpressionSyntax Expression, SemanticModel Model) ParseInitializer(string source)
     {
