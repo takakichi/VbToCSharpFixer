@@ -22,6 +22,7 @@ public sealed class LegacyProjectMaterializer
         var files = new List<FileCopyLogEntry>();
         var changes = new List<ProjectConversionLogEntry>();
         var reviews = new List<ManualReviewItem>();
+        var sourceOutputs = new Dictionary<DocumentId, string>();
         var directories = projects.ToDictionary(x => x.Project.Id, x => layout.ProjectDirectory(x.Project));
         var projectOutputs = projects.Where(x => x.Project.FilePath is not null).ToDictionary(
             x => Path.GetFullPath(x.Project.FilePath!),
@@ -34,14 +35,15 @@ public sealed class LegacyProjectMaterializer
         foreach (var loaded in projects)
         {
             if (loaded.Project.FilePath is null) continue;
-            await ConvertProjectAsync(options, layout, loaded.Project, projectOutputs, files, changes, reviews, cancellationToken);
+            await ConvertProjectAsync(options, layout, loaded.Project, projectOutputs, sourceOutputs,
+                files, changes, reviews, cancellationToken);
         }
 
         var buildTarget = options.Solution is not null
             ? Path.Combine(layout.ConversionRoot, Path.GetFileName(options.Solution))
             : options.Project is not null && projectOutputs.TryGetValue(Path.GetFullPath(options.Project), out var projectTarget)
                 ? projectTarget : null;
-        return new(files, changes, reviews, directories, layout.ConversionRoot, buildTarget);
+        return new(files, changes, reviews, directories, sourceOutputs, layout.ConversionRoot, buildTarget);
     }
 
     /// <summary>Solution内のVBプロジェクトパスとProject Type GUIDをC#用に変換します。</summary>
@@ -80,6 +82,7 @@ public sealed class LegacyProjectMaterializer
     /// <summary>旧形式VBプロジェクトXMLをC#用に変換し、登録ファイルをコピーします。</summary>
     private static async Task ConvertProjectAsync(Options options, OutputLayout layout, Project project,
         IReadOnlyDictionary<string, string> projectOutputs,
+        Dictionary<DocumentId, string> sourceOutputs,
         List<FileCopyLogEntry> files, List<ProjectConversionLogEntry> changes,
         List<ManualReviewItem> reviews, CancellationToken ct)
     {
@@ -99,6 +102,7 @@ public sealed class LegacyProjectMaterializer
 
         var root = document.Root!;
         var ns = root.Name.Namespace;
+        var plannedOutputs = new Dictionary<string, DocumentId>(StringComparer.OrdinalIgnoreCase);
         foreach (var property in root.Descendants())
         {
             if (property.Name.LocalName == "ProjectTypeGuids" && property.Value.Contains(VisualBasicProjectTypeGuid, StringComparison.OrdinalIgnoreCase))
@@ -158,8 +162,11 @@ public sealed class LegacyProjectMaterializer
             if (!FileItemTypes.Contains(itemType)) continue;
 
             var originalInclude = include;
-            if (Path.GetExtension(include).Equals(".vb", StringComparison.OrdinalIgnoreCase))
-                include = Path.ChangeExtension(include, ".cs");
+            var linkElement = item.Elements().FirstOrDefault(x => x.Name.LocalName == "Link");
+            var link = linkElement?.Value;
+            var isVisualBasicSource = Path.GetExtension(include).Equals(".vb", StringComparison.OrdinalIgnoreCase);
+            if (isVisualBasicSource)
+                include = Path.ChangeExtension(link ?? include, ".cs");
             include = MapProjectPath(include);
             item.Attribute("Include")!.Value = include;
             foreach (var metadata in item.Elements().Where(x => x.Name.LocalName is "DependentUpon" or "LastGenOutput"))
@@ -173,14 +180,25 @@ public sealed class LegacyProjectMaterializer
                     generator.Value = "ResXFileCodeGenerator";
             }
 
-            if (!Path.GetExtension(originalInclude).Equals(".vb", StringComparison.OrdinalIgnoreCase))
+            if (isVisualBasicSource)
             {
-                var link = item.Elements().FirstOrDefault(x => x.Name.LocalName == "Link")?.Value;
+                var destination = layout.PathInProject(project, include);
+                MapSourceDocument(project, projectDirectory, originalInclude, link, destination,
+                    sourceOutputs, plannedOutputs, reviews);
+                linkElement?.Remove();
+            }
+            else
+            {
                 var copied = await CopyItemAsync(project, projectDirectory, layout, originalInclude, itemType, options, files, reviews, ct, link);
                 if (copied is not null)
+                {
                     item.Attribute("Include")!.Value = Path.GetRelativePath(Path.GetDirectoryName(destinationProject)!, copied);
+                    linkElement?.Remove();
+                }
             }
         }
+
+        ValidateResourceParents(project, sourceProject, destinationProject, root, sourceOutputs, reviews);
 
         if (!options.DryRun)
         {
@@ -201,6 +219,73 @@ public sealed class LegacyProjectMaterializer
         if (startupObject is not null)
             reviews.Add(Review(project.Name, sourceProject, ReasonCode.StartupObjectUnresolved,
                 $"StartupObject was retained and must be verified for C#: {startupObject.Value}"));
+    }
+
+    /// <summary>VB Compile項目をRoslyn Documentへ対応付け、Linkを考慮したC#出力先を登録します。</summary>
+    private static void MapSourceDocument(Project project, string projectDirectory, string include, string? link,
+        string destination, Dictionary<DocumentId, string> sourceOutputs,
+        Dictionary<string, DocumentId> plannedOutputs, List<ManualReviewItem> reviews)
+    {
+        var source = Path.GetFullPath(Path.Combine(projectDirectory, include));
+        var candidates = project.Documents.Where(document => document.FilePath is not null &&
+            Path.GetFullPath(document.FilePath).Equals(source, StringComparison.OrdinalIgnoreCase) &&
+            !sourceOutputs.ContainsKey(document.Id)).ToArray();
+        if (!string.IsNullOrWhiteSpace(link))
+        {
+            var logical = NormalizeProjectPath(link);
+            var linked = candidates.Where(document =>
+                NormalizeProjectPath(Path.Combine(document.Folders.Concat([document.Name]).ToArray()))
+                    .Equals(logical, StringComparison.OrdinalIgnoreCase)).ToArray();
+            if (linked.Length > 0) candidates = linked;
+        }
+        var selected = candidates.FirstOrDefault();
+        if (selected is null)
+        {
+            reviews.Add(Review(project.Name, source, ReasonCode.MissingContentFile,
+                $"VB Compile item was not loaded as a Roslyn document: {include}"));
+            return;
+        }
+        if (plannedOutputs.TryGetValue(destination, out var existing) && existing != selected.Id)
+        {
+            reviews.Add(Review(project.Name, source, ReasonCode.OutputPathCollision,
+                $"Multiple VB Compile items map to the same output path: {destination}"));
+            return;
+        }
+        plannedOutputs[destination] = selected.Id;
+        sourceOutputs[selected.Id] = destination;
+    }
+
+    /// <summary>EmbeddedResourceのDependentUponが変換後Compile項目と同じ論理フォルダーで一致するか検証します。</summary>
+    private static void ValidateResourceParents(Project project, string sourceProject, string destinationProject,
+        XElement root, IReadOnlyDictionary<DocumentId, string> sourceOutputs, List<ManualReviewItem> reviews)
+    {
+        var compilePaths = root.Descendants().Where(x => x.Name.LocalName == "Compile")
+            .Select(x => x.Attribute("Include")?.Value).Where(x => !string.IsNullOrWhiteSpace(x))
+            .Select(x => NormalizeProjectPath(x!)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var plannedPaths = sourceOutputs.Where(x => project.GetDocument(x.Key) is not null).Select(x => Path.GetFullPath(x.Value))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var projectOutput = Path.GetDirectoryName(destinationProject)!;
+        foreach (var resource in root.Descendants().Where(x => x.Name.LocalName == "EmbeddedResource"))
+        {
+            var include = resource.Attribute("Include")?.Value;
+            var dependentUpon = resource.Elements().FirstOrDefault(x => x.Name.LocalName == "DependentUpon")?.Value;
+            if (string.IsNullOrWhiteSpace(include) || string.IsNullOrWhiteSpace(dependentUpon)) continue;
+            var directory = Path.GetDirectoryName(include) ?? "";
+            var parent = NormalizeProjectPath(Path.Combine(directory, dependentUpon));
+            var parentPath = Path.GetFullPath(Path.Combine(projectOutput, parent));
+            if (!compilePaths.Contains(parent) || !plannedPaths.Contains(parentPath) && !File.Exists(parentPath))
+                reviews.Add(Review(project.Name, sourceProject, ReasonCode.ResourceParentMismatch,
+                    $"EmbeddedResource parent does not match a generated Compile item: {include} -> {parent}"));
+        }
+    }
+
+    /// <summary>Project XML内の相対パスを比較用の区切り文字へ正規化します。</summary>
+    private static string NormalizeProjectPath(string value)
+    {
+        var normalized = value.Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar);
+        var currentPrefix = "." + Path.DirectorySeparatorChar;
+        while (normalized.StartsWith(currentPrefix, StringComparison.Ordinal)) normalized = normalized[currentPrefix.Length..];
+        return normalized;
     }
 
     /// <summary>プロジェクト相対のカスタムMSBuild Importファイルを必要に応じてコピーします。</summary>

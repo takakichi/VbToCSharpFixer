@@ -33,6 +33,8 @@ VbToCSharpFixer.exe `
 
 ProjectReference先のVBプロジェクトも再帰的に出力されます。
 
+複数ProjectからLinkされているVBソースとresxは、各Projectの`Link`論理パスへ個別に出力されます。
+
 ### dry-run
 
 ```powershell
@@ -101,6 +103,14 @@ C:\Converted\
 │  ├─ project-conversion.log
 │  └─ manual-review.csv
 └─ summary.txt
+```
+
+リンクされたFormは、各Project内で次のように親子関係を維持します。
+
+```text
+Project\Forms\SharedForm.cs
+Project\Forms\SharedForm.Designer.cs
+Project\Forms\SharedForm.resx
 ```
 
 Project入力では主Projectを`converted/<Project名>`へ出力し、参照Projectは`converted`直下の兄弟ディレクトリへ出力します。
@@ -178,4 +188,3 @@ service.Close();
 Strings.Mid(text, 1, 3);
 Information.IsDate(value);
 ```
-

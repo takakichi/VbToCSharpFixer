@@ -9,7 +9,7 @@
 - Event、Delegate、`Handles`、`WithEvents`
 - Object／Late Bindingまたは値型を書き換える`With`ブロック
 - Object／Late Binding／ユーザー定義変換を使用するFor／For Each、While、Do Loop
-- `Select Case`
+- ユーザー定義変換や安全性を確定できない比較を含む`Select Case`
 - `Exit Try`、`On Error`、`Resume`
 - LINQ query syntax
 - Iterator、AsyncのVB固有構文
@@ -61,7 +61,7 @@ VBの`Is`／`IsNot`は参照同一性を維持するため`object.ReferenceEqual
 
 Enumの基底型、明示値、属性、Flags演算およびメンバー参照を変換します。VBとC#の大文字・小文字の違いとC#予約語を補正し、Enumと整数型の間でC#に必要な明示キャストを追加します。
 
-Enum値を使用していても、外側が未対応の`Select Case`などである場合は、そのステートメント全体が引き続き`ManualReviewRequired`になります。
+Enum値を使う`Select Case`は対応しますが、ユーザー定義変換など比較動作を確定できないCase句は`ManualReviewRequired`になります。
 
 ## 7. VB Application Framework
 
@@ -100,7 +100,7 @@ Project XMLの指定自体は維持しますが、Wildcard展開による全フ�
 
 ## 10. Project外リンクと外部DLL
 
-Project外のリンクファイルやHintPath DLLは出力ルート内の安全な場所へコピーし、Include／HintPathを更新します。外部ファイルをコピーした事実は`ExternalLinkedFile`としてレビュー記録される場合があります。
+Project外のリンクファイルやHintPath DLLは出力ルート内の安全な場所へコピーし、Include／HintPathを更新します。VB CompileのLink項目は、Projectごとの論理パスへC#として個別出力し、同じフォルダーへ配置したresxのDependentUponを検証します。外部ファイルをコピーした事実は`ExternalLinkedFile`としてレビュー記録される場合があります。
 
 参照ファイルが存在しない場合は`MissingReference`または`MissingContentFile`になります。
 

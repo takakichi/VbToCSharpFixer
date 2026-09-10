@@ -37,9 +37,11 @@ public static class Program
                         var model = loaded.Compilation.GetSemanticModel(tree, ignoreAccessibility: true);
                         var rootNamespace = (loaded.Compilation.Options as Microsoft.CodeAnalysis.VisualBasic.VisualBasicCompilationOptions)?.RootNamespace;
                         var result = converter.Convert(tree, model, loaded.Project.Name, rootNamespace);
-                        var destination = document.FilePath is null
-                            ? layout.PathInProject(loaded.Project, Path.ChangeExtension(document.Name, ".cs"))
-                            : layout.SourceDestination(loaded.Project, document.FilePath);
+                        var destination = materialization.SourceOutputPaths.TryGetValue(document.Id, out var mappedDestination)
+                            ? mappedDestination
+                            : document.FilePath is null
+                                ? layout.PathInProject(loaded.Project, Path.ChangeExtension(document.Name, ".cs"))
+                                : layout.SourceDestination(loaded.Project, document.FilePath);
                         convertedSources.Add((result.CSharp, destination));
                         fixes.AddRange(result.Fixes);
                         reviews.AddRange(result.ManualReviews);

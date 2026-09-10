@@ -21,6 +21,8 @@ public sealed class VbToCSharpConverter
     private readonly Dictionary<string, string> _runtimeAliases = new(StringComparer.Ordinal);
     private readonly HashSet<string> _sourceIdentifiers = new(StringComparer.OrdinalIgnoreCase);
     private readonly Stack<string> _withTargets = new();
+    private readonly Stack<string> _selectEndLabels = new();
+    private readonly Stack<IReadOnlyDictionary<string, string>> _labelMaps = new();
     private bool _needsVisualBasicUsing;
     private SemanticModel _model = null!;
     private string _project = "";
@@ -36,6 +38,8 @@ public sealed class VbToCSharpConverter
         _runtimeAliases.Clear();
         _sourceIdentifiers.Clear();
         _withTargets.Clear();
+        _selectEndLabels.Clear();
+        _labelMaps.Clear();
         _needsVisualBasicUsing = false;
         _model = model;
         _project = projectName;
@@ -83,6 +87,8 @@ public sealed class VbToCSharpConverter
         _runtimeAliases.Clear();
         _sourceIdentifiers.Clear();
         _withTargets.Clear();
+        _selectEndLabels.Clear();
+        _labelMaps.Clear();
         _needsVisualBasicUsing = false;
         foreach (var token in expression.SyntaxTree.GetRoot().DescendantTokens().Where(x => x.IsKind(VBSyntaxKind.IdentifierToken)))
             _sourceIdentifiers.Add(token.ValueText);
@@ -119,6 +125,9 @@ public sealed class VbToCSharpConverter
                 break;
             case MethodBlockSyntax m:
                 WriteMethod(m, output);
+                break;
+            case ConstructorBlockSyntax c:
+                WriteConstructor(c, output);
                 break;
             case MethodStatementSyntax declaration:
                 Line(output, MethodSignature(declaration) + ";");
@@ -163,11 +172,30 @@ public sealed class VbToCSharpConverter
             case WithBlockSyntax w:
                 WriteWithBlock(w, output);
                 break;
+            case SingleLineIfStatementSyntax i:
+                WriteSingleLineIf(i, output);
+                break;
+            case SelectBlockSyntax s:
+                WriteSelectBlock(s, output);
+                break;
+            case LabelStatementSyntax l:
+                WriteLabel(l, output);
+                break;
+            case GoToStatementSyntax g:
+                WriteGoTo(g, output);
+                break;
             case ContinueStatementSyntax c when c.BlockKeyword.IsKind(VBSyntaxKind.ForKeyword):
                 Line(output, "continue;");
                 break;
             case ExitStatementSyntax e when e.BlockKeyword.IsKind(VBSyntaxKind.ForKeyword):
                 Line(output, "break;");
+                break;
+            case ExitStatementSyntax e when e.BlockKeyword.IsKind(VBSyntaxKind.SelectKeyword) && _selectEndLabels.Count > 0:
+                Line(output, $"goto {_selectEndLabels.Peek()};");
+                break;
+            case ExitStatementSyntax e when e.BlockKeyword.IsKind(VBSyntaxKind.SubKeyword) &&
+                                                 _model.GetEnclosingSymbol(e.SpanStart) is IMethodSymbol { MethodKind: MethodKind.Constructor }:
+                Line(output, "return;");
                 break;
             case MultiLineIfBlockSyntax i:
                 Line(output, $"if ({Expr(i.IfStatement.Condition)})");
@@ -266,7 +294,233 @@ public sealed class VbToCSharpConverter
     private void WriteMethod(MethodBlockSyntax method, StringBuilder output)
     {
         Line(output, MethodSignature(method.SubOrFunctionStatement));
-        Block(output, () => { foreach (var s in method.Statements) WriteStatement(s, output); });
+        WithLabelScope(method.Statements, () =>
+            Block(output, () => { foreach (var s in method.Statements) WriteStatement(s, output); }));
+    }
+
+    /// <summary>VBのSub NewをinstanceまたはSharedのC#コンストラクターへ変換します。</summary>
+    private void WriteConstructor(ConstructorBlockSyntax constructor, StringBuilder output)
+    {
+        var statement = constructor.SubNewStatement;
+        WriteAttributes(statement.AttributeLists, output);
+        var symbol = _model.GetDeclaredSymbol(statement) as IMethodSymbol;
+        var typeName = EscapeIdentifier(symbol?.ContainingType.Name ??
+            statement.Ancestors().OfType<TypeStatementSyntax>().FirstOrDefault()?.Identifier.ValueText ?? "Constructor");
+        var isShared = statement.Modifiers.Any(VBSyntaxKind.SharedKeyword);
+        var signature = isShared ? $"static {typeName}()" :
+            $"{Access(statement.Modifiers)}{typeName}({string.Join(", ", statement.ParameterList?.Parameters.Select(Parameter) ?? [])})".TrimStart();
+        var skip = 0;
+        if (!isShared && constructor.Statements.Count > 0 && TryConstructorInitializer(constructor.Statements[0], out var initializer))
+        {
+            signature += " : " + initializer;
+            skip = 1;
+        }
+        var statements = constructor.Statements.Skip(skip).ToArray();
+        Line(output, signature);
+        WithLabelScope(statements, () =>
+            Block(output, () => { foreach (var child in statements) WriteStatement(child, output); }));
+    }
+
+    /// <summary>コンストラクター先頭のMyBase.NewまたはMe.NewをC# initializerへ変換します。</summary>
+    private bool TryConstructorInitializer(StatementSyntax statement, out string initializer)
+    {
+        initializer = "";
+        var invocation = statement switch
+        {
+            ExpressionStatementSyntax { Expression: InvocationExpressionSyntax value } => value,
+            CallStatementSyntax { Invocation: InvocationExpressionSyntax value } => value,
+            _ => null
+        };
+        if (invocation?.Expression is not MemberAccessExpressionSyntax member ||
+            !member.Name.Identifier.ValueText.Equals("New", StringComparison.OrdinalIgnoreCase)) return false;
+        var target = member.Expression switch
+        {
+            MyBaseExpressionSyntax => "base",
+            MeExpressionSyntax => "this",
+            _ => null
+        };
+        if (target is null) return false;
+        var constructor = _model.GetSymbolInfo(invocation).Symbol as IMethodSymbol;
+        initializer = $"{target}({Arguments(invocation.ArgumentList, constructor?.Parameters ?? default)})";
+        return true;
+    }
+
+    /// <summary>単行IfのThenおよびElseステートメントを通常のC#ブロックへ変換します。</summary>
+    private void WriteSingleLineIf(SingleLineIfStatementSyntax statement, StringBuilder output)
+    {
+        Line(output, $"if ({Expr(statement.Condition)})");
+        Block(output, () => { foreach (var child in statement.Statements) WriteStatement(child, output); });
+        if (statement.ElseClause is null) return;
+        Line(output, "else");
+        Block(output, () => { foreach (var child in statement.ElseClause.Statements) WriteStatement(child, output); });
+    }
+
+    /// <summary>VBのSelect Caseを選択式の一度評価とif／else if連鎖へ変換します。</summary>
+    private void WriteSelectBlock(SelectBlockSyntax block, StringBuilder output)
+    {
+        var selectType = _model.GetTypeInfo(block.SelectStatement.Expression).Type;
+        var valueName = CreateUniqueTemporaryName("__selectValue");
+        var cases = new List<(CaseBlockSyntax Block, string? Condition, bool IsElse)>();
+        foreach (var caseBlock in block.CaseBlocks)
+        {
+            var isElse = caseBlock.CaseStatement.Cases.Any(x => x is ElseCaseClauseSyntax);
+            if (isElse)
+            {
+                cases.Add((caseBlock, null, true));
+                continue;
+            }
+            var conditions = caseBlock.CaseStatement.Cases
+                .Select(clause => SelectCaseCondition(clause, valueName, selectType)).ToArray();
+            if (conditions.Any(x => x is null))
+            {
+                Review(block, ReasonCode.UnsupportedSyntax, "Select Case contains a comparison that cannot be preserved safely");
+                Line(output, $"// ManualReviewRequired: unsupported SelectBlock: {OneLine(block.ToString())}");
+                return;
+            }
+            cases.Add((caseBlock, string.Join(" || ", conditions.Select(x => x!.Contains(" && ", StringComparison.Ordinal) ? $"({x})" : x)), false));
+        }
+
+        var endLabel = CreateUniqueTemporaryName("__selectEnd");
+        Line(output, "{");
+        _indent++;
+        Line(output, $"var {valueName} = {Expr(block.SelectStatement.Expression)};");
+        _selectEndLabels.Push(endLabel);
+        try
+        {
+            var wroteCondition = false;
+            foreach (var item in cases)
+            {
+                if (item.IsElse)
+                    Line(output, wroteCondition ? "else" : "if (true)");
+                else
+                {
+                    Line(output, wroteCondition ? $"else if ({item.Condition})" : $"if ({item.Condition})");
+                    wroteCondition = true;
+                }
+                Block(output, () => { foreach (var child in item.Block.Statements) WriteStatement(child, output); });
+            }
+        }
+        finally
+        {
+            _selectEndLabels.Pop();
+        }
+        Line(output, endLabel + ":;");
+        _indent--;
+        Line(output, "}");
+    }
+
+    /// <summary>Select Caseの単一値、範囲、比較句をC#条件式へ変換します。</summary>
+    private string? SelectCaseCondition(CaseClauseSyntax clause, string valueName, ITypeSymbol? selectType)
+    {
+        return clause switch
+        {
+            SimpleCaseClauseSyntax simple => SelectComparison(valueName, simple.Value, "==", selectType),
+            RangeCaseClauseSyntax range => CombineSelectRange(
+                SelectComparison(valueName, range.LowerBound, ">=", selectType),
+                SelectComparison(valueName, range.UpperBound, "<=", selectType)),
+            RelationalCaseClauseSyntax relational => SelectComparison(valueName, relational.Value,
+                RelationalOperator(relational.OperatorToken.ValueText), selectType),
+            _ => null
+        };
+    }
+
+    /// <summary>Select Caseの範囲比較を両端が安全な場合だけ結合します。</summary>
+    private static string? CombineSelectRange(string? lower, string? upper) =>
+        lower is null || upper is null ? null : $"{lower} && {upper}";
+
+    /// <summary>Select Caseの比較を型に応じてC#演算子またはVB Operators呼び出しへ変換します。</summary>
+    private string? SelectComparison(string left, ExpressionSyntax rightExpression, string? operation, ITypeSymbol? selectType)
+    {
+        if (operation is null || selectType is null) return null;
+        var compareText = UsesTextComparison();
+        if (selectType.SpecialType == SpecialType.System_String)
+        {
+            var compare = VisualBasicOperatorAccess("CompareString");
+            return compare is null ? null : $"{compare}({left}, {ExprForTarget(rightExpression, selectType)}, {compareText.ToString().ToLowerInvariant()}) {operation} 0";
+        }
+        if (selectType.SpecialType == SpecialType.System_Object)
+        {
+            var method = operation switch
+            {
+                "==" => "ConditionalCompareObjectEqual", "!=" => "ConditionalCompareObjectNotEqual",
+                "<" => "ConditionalCompareObjectLess", "<=" => "ConditionalCompareObjectLessEqual",
+                ">" => "ConditionalCompareObjectGreater", ">=" => "ConditionalCompareObjectGreaterEqual",
+                _ => null
+            };
+            var compare = method is null ? null : VisualBasicOperatorAccess(method);
+            return compare is null ? null : $"{compare}({left}, {Expr(rightExpression)}, {compareText.ToString().ToLowerInvariant()})";
+        }
+        var conversion = _model.ClassifyConversion(rightExpression, selectType);
+        if (!conversion.Exists || conversion.IsUserDefined || conversion.IsNarrowing &&
+            !(selectType.TypeKind == TypeKind.Enum && _model.GetTypeInfo(rightExpression).Type is { } source && IsIntegral(source)))
+            return null;
+        return $"{left} {operation} {ExprForTarget(rightExpression, selectType)}";
+    }
+
+    /// <summary>VBのSelect Case比較演算子をC#演算子へ変換します。</summary>
+    private static string? RelationalOperator(string operation) => operation switch
+    {
+        "=" => "==", "<>" => "!=", "<" => "<", "<=" => "<=", ">" => ">", ">=" => ">=", _ => null
+    };
+
+    /// <summary>Microsoft.VisualBasic.CompilerServices.Operatorsの比較メソッド参照を生成します。</summary>
+    private string? VisualBasicOperatorAccess(string method)
+    {
+        var operators = _model.Compilation.GetTypeByMetadataName("Microsoft.VisualBasic.CompilerServices.Operators");
+        if (operators is null) return null;
+        return $"{VisualBasicRuntimeTypeAccess(operators)}.{method}";
+    }
+
+    /// <summary>メソッド内LabelをC#で有効かつ衝突しない名前へ対応付けて本体を変換します。</summary>
+    private void WithLabelScope(IEnumerable<StatementSyntax> statements, Action body)
+    {
+        var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var label in statements.SelectMany(x => x.DescendantNodesAndSelf()).OfType<LabelStatementSyntax>())
+        {
+            var source = label.LabelToken.ValueText;
+            if (map.ContainsKey(source)) continue;
+            var baseName = CSharpSyntaxFacts.IsValidIdentifier(source) ? EscapeIdentifier(source) : "__label_" + source;
+            map[source] = CreateUniqueTemporaryName(baseName);
+        }
+        _labelMaps.Push(map);
+        try { body(); }
+        finally { _labelMaps.Pop(); }
+    }
+
+    /// <summary>現在のVBファイルまたはProject既定値がOption Compare Textか判定します。</summary>
+    private bool UsesTextComparison()
+    {
+        var root = (CompilationUnitSyntax)_model.SyntaxTree.GetRoot();
+        var option = root.Options.LastOrDefault(x => x.NameKeyword.IsKind(VBSyntaxKind.CompareKeyword));
+        return option is null
+            ? (_model.Compilation.Options as VisualBasicCompilationOptions)?.OptionCompareText == true
+            : option.ValueKeyword.IsKind(VBSyntaxKind.TextKeyword);
+    }
+
+    /// <summary>VB Labelを現在のメソッド内対応表に基づくC# Labelとして出力します。</summary>
+    private void WriteLabel(LabelStatementSyntax statement, StringBuilder output)
+    {
+        var source = statement.LabelToken.ValueText;
+        if (_labelMaps.Count > 0 && _labelMaps.Peek().TryGetValue(source, out var label))
+            Line(output, label + ":");
+        else
+        {
+            Review(statement, ReasonCode.UnresolvedSymbol, $"Label could not be resolved: {source}");
+            Line(output, $"// ManualReviewRequired: unresolved label {source}");
+        }
+    }
+
+    /// <summary>通常のVB GoToを現在のメソッド内Labelへ変換します。</summary>
+    private void WriteGoTo(GoToStatementSyntax statement, StringBuilder output)
+    {
+        var source = statement.Label.LabelToken.ValueText;
+        if (_labelMaps.Count > 0 && _labelMaps.Peek().TryGetValue(source, out var label))
+            Line(output, $"goto {label};");
+        else
+        {
+            Review(statement, ReasonCode.UnresolvedSymbol, $"GoTo target could not be resolved: {source}");
+            Line(output, $"// ManualReviewRequired: unresolved GoTo {source}");
+        }
     }
 
     /// <summary>VBのTry、Catch、Finallyブロックを同じ順序のC#例外処理へ変換します。</summary>
@@ -630,9 +884,6 @@ public sealed class VbToCSharpConverter
         {
             foreach (var name in d.Names)
             {
-                var type = Type(d.AsClause?.Type());
-                if (!field && d.AsClause is null && d.Initializer is not null) type = "var";
-                var prefix = field ? AccessText(modifierText) : "";
                 var declared = _model.GetDeclaredSymbol(name);
                 var targetType = declared switch
                 {
@@ -640,10 +891,36 @@ public sealed class VbToCSharpConverter
                     IFieldSymbol declaredField => declaredField.Type,
                     _ => null
                 };
-                var init = d.Initializer is null ? "" : " = " + ExprForTarget(d.Initializer.Value, targetType);
-                Line(output, $"{prefix}{type} {name.Identifier.ValueText}{init};".TrimStart());
+                var type = targetType is IArrayTypeSymbol && CSharpTypeName(targetType) is { } arrayType
+                    ? arrayType : Type(d.AsClause?.Type());
+                if (!field && d.AsClause is null && d.Initializer is not null && targetType is not IArrayTypeSymbol) type = "var";
+                var prefix = field ? AccessText(modifierText) : "";
+                string init;
+                if (d.Initializer is not null)
+                    init = " = " + ExprForTarget(d.Initializer.Value, targetType);
+                else if (targetType is IArrayTypeSymbol array && TryArrayBounds(name, array, out var allocation))
+                    init = " = " + allocation;
+                else
+                    init = "";
+                Line(output, $"{prefix}{type} {EscapeIdentifier(name.Identifier.ValueText)}{init};".TrimStart());
             }
         }
+    }
+
+    /// <summary>変数名側に指定されたVB配列上限をC#の配列長へ変換します。</summary>
+    private bool TryArrayBounds(ModifiedIdentifierSyntax name, IArrayTypeSymbol array, out string allocation)
+    {
+        allocation = "";
+        if (name.ArrayBounds is null || name.ArrayBounds.Arguments.Count == 0) return false;
+        var bounds = name.ArrayBounds.Arguments.OfType<SimpleArgumentSyntax>().ToArray();
+        var elementType = CSharpTypeName(array.ElementType);
+        if (bounds.Length != name.ArrayBounds.Arguments.Count || bounds.Length != array.Rank || elementType is null)
+        {
+            Review(name, ReasonCode.UnsupportedSyntax, "Array bounds could not be converted safely");
+            return false;
+        }
+        allocation = $"new {elementType}[{string.Join(", ", bounds.Select(x => $"({Expr(x.Expression)}) + 1"))}]";
+        return true;
     }
 
     /// <summary>VB式を種類別にC#式へ変換します。</summary>

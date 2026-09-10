@@ -56,11 +56,13 @@ Project単位C# Compilation検証
 2. `.sln`の`.vbproj`パスを`.csproj`へ変更する
 3. VB Project Type GUIDをC#用へ変更する
 4. `.vbproj` XMLを読み込む
-5. Compile項目、DependentUpon、LastGenOutputを`.cs`へ変更する
-6. `Microsoft.VisualBasic.targets`を`Microsoft.CSharp.targets`へ変更する
-7. ProjectReferenceを変換後Projectの相対パスへ変更する
-8. Resource、Content、None、Settings、DLLなどをコピーする
-9. 外部パスは安全な出力領域へ移し、IncludeまたはHintPathを同期する
+5. Compile項目の物理パスとLink論理パスからProject別C#出力先を確定する
+6. Compile項目、DependentUpon、LastGenOutputを`.cs`へ変更する
+7. resxと親Compile項目が同じ論理フォルダーで対応することを検証する
+8. `Microsoft.VisualBasic.targets`を`Microsoft.CSharp.targets`へ変更する
+9. ProjectReferenceを変換後Projectの相対パスへ変更する
+10. Resource、Content、None、Settings、DLLなどをコピーする
+11. 外部パスは安全な出力領域へ移し、IncludeまたはHintPathを同期する
 
 ## 4. 式変換フロー
 

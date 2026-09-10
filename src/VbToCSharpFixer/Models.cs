@@ -10,7 +10,8 @@ public enum ReasonCode
     MissingProjectFile, MissingContentFile, UnsupportedProjectType, UnsupportedComReference,
     UnsupportedApplicationFramework, StartupObjectUnresolved, ResourceGeneratorConversionFailure,
     ExternalLinkedFile, OutputPathCollision, InvalidRelativePath, ProjectConversionFailure,
-    SolutionConversionFailure, GeneratedProjectBuildFailure, WildcardProjectItem
+    SolutionConversionFailure, GeneratedProjectBuildFailure, WildcardProjectItem,
+    ResourceParentMismatch
 }
 
 public sealed record FixResult(
@@ -41,6 +42,7 @@ public sealed record MaterializationResult(
     IReadOnlyList<ProjectConversionLogEntry> ProjectOperations,
     IReadOnlyList<ManualReviewItem> ManualReviews,
     IReadOnlyDictionary<ProjectId, string> ProjectOutputDirectories,
+    IReadOnlyDictionary<DocumentId, string> SourceOutputPaths,
     string ConversionRoot,
     string? BuildTarget);
 

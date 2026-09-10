@@ -68,6 +68,8 @@ var valid = Information.IsDate(value);
 - ProjectReferenceを出力先へ付け替え
 - 非VBプロジェクト項目をコピー
 - `My Project`の標準項目を`Properties`へ割り当て
+- LinkされたVBソースをProjectごとの論理パスへ個別出力
+- Form、Designer、resxのDependentUpon整合性を検証
 
 ### OutputLayout
 
@@ -128,4 +130,3 @@ tests/VbToCSharpFixer.Tests/
 - Microsoft.NET.Test.Sdk
 - NUnit
 - NUnit3TestAdapter
-

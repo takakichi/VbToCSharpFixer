@@ -121,6 +121,53 @@ public sealed class LegacyProjectMaterializerTests
         });
     }
 
+    /// <summary>複数ProjectからLinkされたForm一式を各Projectの論理パスへ分離して関連付けます。</summary>
+    [Test]
+    public async Task Materializes_linked_forms_per_project_and_preserves_resource_parent()
+    {
+        var shared = Path.Combine(_root, "Shared");
+        Directory.CreateDirectory(shared);
+        foreach (var file in new[] { "SharedForm.vb", "SharedForm.Designer.vb" })
+            await File.WriteAllTextAsync(Path.Combine(shared, file), "Public Class SharedForm\nEnd Class");
+        await File.WriteAllTextAsync(Path.Combine(shared, "SharedForm.resx"), "<root />");
+        var first = await CreateLinkedProject("First");
+        var second = await CreateLinkedProject("Second");
+        var solutionPath = Path.Combine(_root, "Linked.sln");
+        await File.WriteAllTextAsync(solutionPath, $$"""
+Project("{{LegacyProjectMaterializer.VisualBasicProjectTypeGuid}}") = "First", "First\First.vbproj", "{11111111-1111-1111-1111-111111111111}"
+EndProject
+Project("{{LegacyProjectMaterializer.VisualBasicProjectTypeGuid}}") = "Second", "Second\Second.vbproj", "{22222222-2222-2222-2222-222222222222}"
+EndProject
+Global
+EndGlobal
+""");
+        var output = Path.Combine(_root, "linked-out");
+        var result = await new LegacyProjectMaterializer().MaterializeAsync(
+            new Options(solutionPath, null, null, null, output, false, false), [first, second]);
+
+        foreach (var loaded in new[] { first, second })
+        {
+            var projectOutput = Path.Combine(output, "converted", "Linked", loaded.Project.Name, "Forms");
+            var projectFile = Path.Combine(output, "converted", "Linked", loaded.Project.Name, loaded.Project.Name + ".csproj");
+            var xml = XDocument.Load(projectFile);
+            var compile = xml.Descendants().Where(x => x.Name.LocalName == "Compile")
+                .Select(x => x.Attribute("Include")?.Value).ToArray();
+            var resource = xml.Descendants().Single(x => x.Name.LocalName == "EmbeddedResource");
+            Assert.Multiple(() =>
+            {
+                Assert.That(compile, Does.Contain("Forms\\SharedForm.cs"));
+                Assert.That(compile, Does.Contain("Forms\\SharedForm.Designer.cs"));
+                Assert.That(resource.Attribute("Include")?.Value, Is.EqualTo("Forms\\SharedForm.resx"));
+                Assert.That(resource.Elements().Single(x => x.Name.LocalName == "DependentUpon").Value, Is.EqualTo("SharedForm.cs"));
+                Assert.That(xml.Descendants().Any(x => x.Name.LocalName == "Link"), Is.False);
+                Assert.That(File.Exists(Path.Combine(projectOutput, "SharedForm.resx")), Is.True);
+                Assert.That(result.SourceOutputPaths.Values, Does.Contain(Path.Combine(projectOutput, "SharedForm.cs")));
+                Assert.That(result.SourceOutputPaths.Values, Does.Contain(Path.Combine(projectOutput, "SharedForm.Designer.cs")));
+            });
+        }
+        Assert.That(result.ManualReviews.Any(x => x.ReasonCode == ReasonCode.ResourceParentMismatch), Is.False);
+    }
+
     /// <summary>テスト用VBプロジェクトからRoslyn Compilationを構築します。</summary>
     private async Task<LoadedProject> CreateLoadedProject()
     {
@@ -134,6 +181,38 @@ public sealed class LegacyProjectMaterializerTests
         {
             var path = Path.Combine(Path.GetDirectoryName(_projectPath)!, file);
             solution = solution.AddDocument(DocumentId.CreateNewId(id), file, SourceText.From(await File.ReadAllTextAsync(path)), filePath: path);
+        }
+        var project = solution.GetProject(id)!;
+        return new(project, (await project.GetCompilationAsync())!);
+    }
+
+    /// <summary>共有FormをForms配下へLinkするテスト用旧形式Projectを生成します。</summary>
+    private async Task<LoadedProject> CreateLinkedProject(string name)
+    {
+        var directory = Path.Combine(_root, name);
+        Directory.CreateDirectory(directory);
+        var projectPath = Path.Combine(directory, name + ".vbproj");
+        await File.WriteAllTextAsync(projectPath, """
+<Project ToolsVersion="15.0" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup><TargetFrameworkVersion>v4.8</TargetFrameworkVersion></PropertyGroup>
+  <ItemGroup>
+    <Compile Include="..\Shared\SharedForm.vb"><Link>Forms\SharedForm.vb</Link><SubType>Form</SubType></Compile>
+    <Compile Include="..\Shared\SharedForm.Designer.vb"><Link>Forms\SharedForm.Designer.vb</Link><DependentUpon>SharedForm.vb</DependentUpon></Compile>
+    <EmbeddedResource Include="..\Shared\SharedForm.resx"><Link>Forms\SharedForm.resx</Link><DependentUpon>SharedForm.vb</DependentUpon></EmbeddedResource>
+  </ItemGroup>
+  <Import Project="$(MSBuildToolsPath)\Microsoft.VisualBasic.targets" />
+</Project>
+""");
+        var workspace = new AdhocWorkspace();
+        var id = ProjectId.CreateNewId();
+        var solution = workspace.CurrentSolution.AddProject(ProjectInfo.Create(
+            id, VersionStamp.Create(), name, name, LanguageNames.VisualBasic, filePath: projectPath,
+            compilationOptions: new VisualBasicCompilationOptions(OutputKind.DynamicallyLinkedLibrary)));
+        foreach (var file in new[] { "SharedForm.vb", "SharedForm.Designer.vb" })
+        {
+            var path = Path.Combine(_root, "Shared", file);
+            solution = solution.AddDocument(DocumentId.CreateNewId(id), file,
+                SourceText.From(await File.ReadAllTextAsync(path)), folders: ["Forms"], filePath: path);
         }
         var project = solution.GetProject(id)!;
         return new(project, (await project.GetCompilationAsync())!);

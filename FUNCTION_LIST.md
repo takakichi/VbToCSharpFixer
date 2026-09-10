@@ -39,6 +39,19 @@
 | `WriteAttributes` | VB属性リストをC#属性として出力する |
 | `Attribute` | 属性の位置引数と名前付き引数をC#表現へ変換する |
 | `WriteMethod` | メソッドブロックを出力する |
+| `WriteConstructor` | Sub Newをinstance／Sharedコンストラクターとして出力する |
+| `TryConstructorInitializer` | MyBase.New／Me.Newをbase／this initializerへ変換する |
+| `WriteSingleLineIf` | 単行IfのThen／ElseをC#ブロックへ変換する |
+| `WriteSelectBlock` | Select Caseを選択値の一度評価とif／else ifへ変換する |
+| `SelectCaseCondition` | Caseの単一値、範囲、比較句を条件式へ変換する |
+| `CombineSelectRange` | Case範囲の上下限条件を結合する |
+| `SelectComparison` | Select対象型に応じた比較式を生成する |
+| `RelationalOperator` | Case Isの演算子をC#演算子へ変換する |
+| `VisualBasicOperatorAccess` | VB Operators比較メソッドの参照を生成する |
+| `WithLabelScope` | メソッド内Labelと生成名の対応表を管理する |
+| `UsesTextComparison` | Option Compare Textの有効状態を判定する |
+| `WriteLabel` | LabelStatementをC# Labelへ変換する |
+| `WriteGoTo` | GoToStatementを対応するC# Label参照へ変換する |
 | `WriteTryBlock` | Try、Catch、Finallyを同じ順序のC#例外処理へ変換する |
 | `WriteCatchBlock` | Catchの例外型、変数、Whenフィルターと本体を変換する |
 | `CatchType` | Catch例外型をGlobal Importsに依存しない完全修飾名へ変換する |
@@ -59,6 +72,7 @@
 | `WriteProperty` | PropertyとAccessorを出力する |
 | `PropertySignature` | PropertyまたはIndexerのシグネチャを生成する |
 | `WriteDeclaration` | FieldまたはLocal変数宣言を出力する |
+| `TryArrayBounds` | 変数名側の配列上限をC#の配列長へ変換する |
 | `Expr` | VB式を種類別にC#へ変換する |
 | `Invocation` | Method、Array、Indexer呼び出しを変換する |
 | `IndexerTarget` | ItemプロパティをC# Indexer対象へ変換する |
@@ -104,6 +118,9 @@
 | `MaterializeAsync` | Solution、Project、関連ファイルを出力する |
 | `ConvertSolutionAsync` | `.sln`のVB Project情報をC#用へ変更する |
 | `ConvertProjectAsync` | 旧形式`.vbproj`を`.csproj`へ変換する |
+| `MapSourceDocument` | Compileの物理パス、Link論理パス、C#出力先を対応付ける |
+| `ValidateResourceParents` | resxのDependentUponと生成Compile項目の整合性を検証する |
+| `NormalizeProjectPath` | Project項目パスを比較可能な形式へ正規化する |
 | `CopyImportIfLocal` | 相対指定されたMSBuild Importをコピーする |
 | `CopyItemAsync` | Content、Resource、DLLなどを安全にコピーする |
 | `MapProjectPath` | `My Project`の標準ファイルを`Properties`へ割り当てる |

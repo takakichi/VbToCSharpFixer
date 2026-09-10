@@ -1201,6 +1201,213 @@ End Class
         AssertGeneratedCompiles(result, compilation, "AllPredefinedCasts");
     }
 
+    /// <summary>変数名側の空Rankと境界値から配列型およびVB上限+1の配列生成を出力します。</summary>
+    [Test]
+    public void Converts_array_ranks_and_bounds_declared_on_variable_names()
+    {
+        var source = """
+Public Class ArrayUsage
+    Private values() As String
+    Public Function Run() As Integer
+        Dim one() As String
+        Dim matrix(,) As Integer
+        Dim allocated(2) As String
+        Return allocated.Length
+    End Function
+End Class
+""";
+        var tree = VisualBasicSyntaxTree.ParseText(source, path: "arrays.vb");
+        var compilation = CreateCompilation(tree);
+        var result = new VbToCSharpConverter().Convert(tree, compilation.GetSemanticModel(tree), "Test");
+        Assert.Multiple(() =>
+        {
+            Assert.That(result.CSharp, Does.Contain("private string[] values;"));
+            Assert.That(result.CSharp, Does.Contain("string[] one;"));
+            Assert.That(result.CSharp, Does.Contain("int[,] matrix;"));
+            Assert.That(result.CSharp, Does.Contain("string[] allocated = new string[(2) + 1];"));
+        });
+        var compiled = CompileAndCreate(result, compilation, "ArrayUsage");
+        Assert.That(compiled.Type.GetMethod("Run")!.Invoke(compiled.Instance, null), Is.EqualTo(3));
+    }
+
+    /// <summary>instance、this/base初期化およびSharedのSub NewをC#コンストラクターへ変換します。</summary>
+    [Test]
+    public void Converts_constructor_blocks_and_initializers()
+    {
+        var source = """
+Public Class BaseType
+    Public Sub New(value As Integer)
+    End Sub
+End Class
+Public Class ConstructorUsage
+    Inherits BaseType
+    Public Sub New()
+        Me.New(1)
+    End Sub
+    Public Sub New(value As Integer)
+        MyBase.New(value)
+        If value < 0 Then Exit Sub Else Value = value
+    End Sub
+    Shared Sub New()
+    End Sub
+    Public Value As Integer
+End Class
+""";
+        var tree = VisualBasicSyntaxTree.ParseText(source, path: "constructors.vb");
+        var compilation = CreateCompilation(tree);
+        var errors = compilation.GetDiagnostics().Where(x => x.Severity == DiagnosticSeverity.Error).ToArray();
+        Assert.That(errors, Is.Empty, string.Join("\n", errors.Select(x => x.ToString())));
+        var result = new VbToCSharpConverter().Convert(tree, compilation.GetSemanticModel(tree), "Test");
+        Assert.Multiple(() =>
+        {
+            Assert.That(result.CSharp, Does.Contain("public BaseType(int value)"));
+            Assert.That(result.CSharp, Does.Contain("public ConstructorUsage() : this(1)"));
+            Assert.That(result.CSharp, Does.Contain("public ConstructorUsage(int value) : base(value)"));
+            Assert.That(result.CSharp, Does.Contain("static ConstructorUsage()"));
+            Assert.That(result.CSharp, Does.Not.Contain("unsupported ConstructorBlock"));
+        });
+        var compiled = CompileAndCreate(result, compilation, "ConstructorUsage");
+        Assert.That(compiled.Type.GetField("Value")!.GetValue(compiled.Instance), Is.EqualTo(1));
+    }
+
+    /// <summary>SingleLine Ifの複数Then文とElse文を通常のC#ブロックへ変換します。</summary>
+    [Test]
+    public void Converts_single_line_if_statements()
+    {
+        var source = """
+Public Class SingleIfUsage
+    Public Function Run(value As Integer) As Integer
+        Dim result As Integer = 0
+        If value > 0 Then result = 10 : result += 1 Else result = -1
+        Return result
+    End Function
+End Class
+""";
+        var compiled = ConvertCompileAndCreate(source, "SingleIfUsage");
+        Assert.Multiple(() =>
+        {
+            Assert.That(compiled.Type.GetMethod("Run")!.Invoke(compiled.Instance, [1]), Is.EqualTo(11));
+            Assert.That(compiled.Type.GetMethod("Run")!.Invoke(compiled.Instance, [0]), Is.EqualTo(-1));
+        });
+    }
+
+    /// <summary>識別子Label、数値LabelおよびGoToをメソッド内で対応付けて変換します。</summary>
+    [Test]
+    public void Converts_labels_and_goto_statements()
+    {
+        var source = """
+Public Class LabelUsage
+    Public Function Run() As Integer
+        Dim count As Integer = 0
+        GoTo Start
+100:
+        Return count
+Start:
+        count += 1
+        If count < 2 Then GoTo Start Else GoTo 100
+    End Function
+End Class
+""";
+        var tree = VisualBasicSyntaxTree.ParseText(source, path: "labels.vb");
+        var compilation = CreateCompilation(tree);
+        var result = new VbToCSharpConverter().Convert(tree, compilation.GetSemanticModel(tree), "Test");
+        Assert.Multiple(() =>
+        {
+            Assert.That(result.CSharp, Does.Contain("goto "));
+            Assert.That(result.CSharp, Does.Contain("__label_100"));
+            Assert.That(result.CSharp, Does.Not.Contain("unsupported LabelStatement"));
+            Assert.That(result.CSharp, Does.Not.Contain("unsupported GoToStatement"));
+        });
+        var compiled = CompileAndCreate(result, compilation, "LabelUsage");
+        Assert.That(compiled.Type.GetMethod("Run")!.Invoke(compiled.Instance, null), Is.EqualTo(2));
+    }
+
+    /// <summary>Select Caseの値、複数値、範囲、比較、ElseおよびExit Selectを変換します。</summary>
+    [TestCase(1, "one")]
+    [TestCase(3, "two-three")]
+    [TestCase(7, "range")]
+    [TestCase(20, "large")]
+    [TestCase(15, "other")]
+    public void Converts_select_blocks(int value, string expected)
+    {
+        var source = """
+Public Class SelectUsage
+    Public Function Run(value As Integer) As String
+        Dim result As String = ""
+        Select Case value
+            Case 1
+                result = "one"
+            Case 2, 3
+                result = "two-three"
+            Case 4 To 10
+                result = "range"
+            Case Is >= 20
+                result = "large"
+                Exit Select
+            Case Else
+                result = "other"
+        End Select
+        Return result
+    End Function
+End Class
+""";
+        var compiled = ConvertCompileAndCreate(source, "SelectUsage");
+        Assert.That(compiled.Type.GetMethod("Run")!.Invoke(compiled.Instance, [value]), Is.EqualTo(expected));
+    }
+
+    /// <summary>Option Compare Textの文字列SelectをVB Operatorsで比較して大文字小文字を無視します。</summary>
+    [Test]
+    public void Preserves_option_compare_text_in_string_select()
+    {
+        var source = """
+Option Compare Text
+Public Class TextSelectUsage
+    Public Function Run(value As String) As Boolean
+        Select Case value
+            Case "alpha"
+                Return True
+            Case Else
+                Return False
+        End Select
+    End Function
+End Class
+""";
+        var tree = VisualBasicSyntaxTree.ParseText(source, path: "text-select.vb");
+        var compilation = CreateCompilation(tree);
+        var result = new VbToCSharpConverter().Convert(tree, compilation.GetSemanticModel(tree), "Test");
+        Assert.That(result.CSharp, Does.Contain("VBOperators.CompareString"));
+        var compiled = CompileAndCreate(result, compilation, "TextSelectUsage");
+        Assert.That(compiled.Type.GetMethod("Run")!.Invoke(compiled.Instance, ["ALPHA"]), Is.True);
+    }
+
+    /// <summary>Object型Selectの値、範囲、比較をVB Operatorsで実行してLate Binding比較を維持します。</summary>
+    [TestCase(2, "range")]
+    [TestCase(12, "large")]
+    [TestCase(5, "other")]
+    public void Preserves_object_comparisons_in_select(object value, string expected)
+    {
+        var source = """
+Public Class ObjectSelectUsage
+    Public Function Run(value As Object) As String
+        Select Case value
+            Case 1 To 3
+                Return "range"
+            Case Is >= 10
+                Return "large"
+            Case Else
+                Return "other"
+        End Select
+    End Function
+End Class
+""";
+        var tree = VisualBasicSyntaxTree.ParseText(source, path: "object-select.vb");
+        var compilation = CreateCompilation(tree);
+        var result = new VbToCSharpConverter().Convert(tree, compilation.GetSemanticModel(tree), "Test");
+        Assert.That(result.CSharp, Does.Contain("VBOperators.ConditionalCompareObject"));
+        var compiled = CompileAndCreate(result, compilation, "ObjectSelectUsage");
+        Assert.That(compiled.Type.GetMethod("Run")!.Invoke(compiled.Instance, [value]), Is.EqualTo(expected));
+    }
+
     /// <summary>VBソースの最後の初期化式と対応するSemanticModelを返します。</summary>
     private static (ExpressionSyntax Expression, SemanticModel Model) ParseInitializer(string source)
     {
