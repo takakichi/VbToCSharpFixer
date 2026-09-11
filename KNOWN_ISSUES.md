@@ -57,13 +57,21 @@ VBの`Is`／`IsNot`は参照同一性を維持するため`object.ReferenceEqual
 
 `CInt`、`CStr`、`CDate`などの定義済み型変換は、単純なC#キャストや`ToString`へ置換せず、丸め、Nothing、カルチャなどのVB動作を優先して`Microsoft.VisualBasic.CompilerServices.Conversions`へ変換します。`CObj`はC#のObjectキャストへ変換します。
 
-## 6. Enum
+`CType`も変換先が組み込み型の場合は同じ`Conversions`を使用します。参照型、配列、Enum、Objectおよびユーザー定義変換は意味解析後にC#キャストへ変換し、キャスト式全体を括ることでDesignerコードの`BeginInit`／`EndInit`など後続メソッド呼び出しの結合先を維持します。型または変換を解決できない場合は推測せず`ManualReviewRequired`になります。
+
+## 6. Windows Forms Designer生成コード
+
+ModuleはVBで暗黙にSharedとなるため、生成するstatic class内のフィールド、プロパティ、メソッド、コンストラクターもSymbolの`IsStatic`に基づいてstatic化します。これにより`Resources.Designer.cs`などでstatic classにinstanceメンバーが生成される問題を防ぎます。
+
+Designerの`New T() { ... }`配列生成は`new T[] { ... }`へ変換し、初期化子内の`Me`も`this`へ変換します。多次元配列初期化子はRankを維持します。Object Initializerの特殊形式は引き続き限定対応です。
+
+## 7. Enum
 
 Enumの基底型、明示値、属性、Flags演算およびメンバー参照を変換します。VBとC#の大文字・小文字の違いとC#予約語を補正し、Enumと整数型の間でC#に必要な明示キャストを追加します。
 
 Enum値を使う`Select Case`は対応しますが、ユーザー定義変換など比較動作を確定できないCase句は`ManualReviewRequired`になります。
 
-## 7. VB Application Framework
+## 8. VB Application Framework
 
 次は完全自動変換の対象外です。
 
@@ -77,7 +85,7 @@ Enum値を使う`Select Case`は対応しますが、ユーザー定義変換な
 
 該当Projectは`UnsupportedApplicationFramework`または`StartupObjectUnresolved`として記録されます。
 
-## 8. COM参照
+## 9. COM参照
 
 COMReferenceとCOMFileReferenceのProject情報は可能な範囲で維持しますが、以下は自動化しません。
 
@@ -88,7 +96,7 @@ COMReferenceとCOMFileReferenceのProject情報は可能な範囲で維持しま
 
 COM参照はManualReviewRequiredになります。
 
-## 9. Wildcard Project Item
+## 10. Wildcard Project Item
 
 次のようなWildcard指定は、ファイル集合を安全に確定できないためレビュー対象です。
 
@@ -98,26 +106,26 @@ COM参照はManualReviewRequiredになります。
 
 Project XMLの指定自体は維持しますが、Wildcard展開による全ファイルコピーは行いません。
 
-## 10. Project外リンクと外部DLL
+## 11. Project外リンクと外部DLL
 
 Project外のリンクファイルやHintPath DLLは出力ルート内の安全な場所へコピーし、Include／HintPathを更新します。VB CompileのLink項目は、Projectごとの論理パスへC#として個別出力し、同じフォルダーへ配置したresxのDependentUponを検証します。外部ファイルをコピーした事実は`ExternalLinkedFile`としてレビュー記録される場合があります。
 
 参照ファイルが存在しない場合は`MissingReference`または`MissingContentFile`になります。
 
-## 11. NuGet
+## 12. NuGet
 
 `packages.config`と既存HintPathは維持しますが、ツール自身はNuGetパッケージの復元保証やパッケージ形式の変換を行いません。生成SolutionのMSBuild時に必要なパッケージが存在しない場合、ビルド検証が失敗します。
 
-## 12. Frameworkとビルド環境
+## 13. Frameworkとビルド環境
 
 対象FrameworkのDeveloper Pack、Reference Assemblies、Visual Studio Build Tools、カスタムtargetsが存在しない環境では、MSBuildWorkspaceのロードまたは最終ビルドが失敗することがあります。
 
 ビルドを別環境で行う場合は`--skip-build`を指定できます。
 
-## 13. 既存出力
+## 14. 既存出力
 
 同じ出力ディレクトリを再利用すると、対象ファイルは再生成または上書きされます。以前の実行で生成され、今回の入力には存在しない古いファイルを自動削除する処理はありません。クリーンな出力ディレクトリの利用を推奨します。
 
-## 14. 非VBプロジェクト
+## 15. 非VBプロジェクト
 
 Solution内のVBプロジェクトが主な変換対象です。C++、セットアップ、データベースなどの別Project形式をC#へ変換する機能はありません。Solution全体に特殊Projectが含まれる場合は、生成Solutionの参照パスとビルド結果を確認してください。

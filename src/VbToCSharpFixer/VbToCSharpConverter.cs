@@ -306,7 +306,7 @@ public sealed class VbToCSharpConverter
         var symbol = _model.GetDeclaredSymbol(statement) as IMethodSymbol;
         var typeName = EscapeIdentifier(symbol?.ContainingType.Name ??
             statement.Ancestors().OfType<TypeStatementSyntax>().FirstOrDefault()?.Identifier.ValueText ?? "Constructor");
-        var isShared = statement.Modifiers.Any(VBSyntaxKind.SharedKeyword);
+        var isShared = symbol?.IsStatic == true || statement.Modifiers.Any(VBSyntaxKind.SharedKeyword);
         var signature = isShared ? $"static {typeName}()" :
             $"{Access(statement.Modifiers)}{typeName}({string.Join(", ", statement.ParameterList?.Parameters.Select(Parameter) ?? [])})".TrimStart();
         var skip = 0;
@@ -846,7 +846,8 @@ public sealed class VbToCSharpConverter
     private string MethodSignature(MethodStatementSyntax method)
     {
         var access = Access(method.Modifiers);
-        var shared = method.Modifiers.Any(VBSyntaxKind.SharedKeyword) ? "static " : "";
+        var symbol = _model.GetDeclaredSymbol(method) as IMethodSymbol;
+        var shared = symbol?.IsStatic == true || method.Modifiers.Any(VBSyntaxKind.SharedKeyword) ? "static " : "";
         var returnType = method.Kind() == VBSyntaxKind.SubStatement ? "void" : Type(method.AsClause?.Type());
         var parameters = string.Join(", ", method.ParameterList?.Parameters.Select(Parameter) ?? []);
         return $"{access}{shared}{returnType} {method.Identifier.ValueText}({parameters})".TrimStart();
@@ -870,11 +871,13 @@ public sealed class VbToCSharpConverter
     private string PropertySignature(PropertyStatementSyntax property)
     {
         var access = Access(property.Modifiers);
+        var symbol = _model.GetDeclaredSymbol(property) as IPropertySymbol;
+        var shared = symbol?.IsStatic == true || property.Modifiers.Any(VBSyntaxKind.SharedKeyword) ? "static " : "";
         var type = Type(property.AsClause?.Type());
         var parameters = property.ParameterList?.Parameters ?? default;
         if (parameters.Count > 0)
-            return $"{access}{type} this[{string.Join(", ", parameters.Select(Parameter))}]".TrimStart();
-        return $"{access}{type} {property.Identifier.ValueText}".TrimStart();
+            return $"{access}{shared}{type} this[{string.Join(", ", parameters.Select(Parameter))}]".TrimStart();
+        return $"{access}{shared}{type} {property.Identifier.ValueText}".TrimStart();
     }
 
     /// <summary>フィールドまたはローカル変数の宣言をC#として出力します。</summary>
@@ -894,7 +897,8 @@ public sealed class VbToCSharpConverter
                 var type = targetType is IArrayTypeSymbol && CSharpTypeName(targetType) is { } arrayType
                     ? arrayType : Type(d.AsClause?.Type());
                 if (!field && d.AsClause is null && d.Initializer is not null && targetType is not IArrayTypeSymbol) type = "var";
-                var prefix = field ? AccessText(modifierText) : "";
+                var shared = declared is IFieldSymbol { IsStatic: true } ? "static " : "";
+                var prefix = field ? AccessText(modifierText) + shared : "";
                 string init;
                 if (d.Initializer is not null)
                     init = " = " + ExprForTarget(d.Initializer.Value, targetType);
@@ -937,11 +941,12 @@ public sealed class VbToCSharpConverter
             ParenthesizedExpressionSyntax p => $"({Expr(p.Expression)})",
             BinaryExpressionSyntax b => Binary(b),
             UnaryExpressionSyntax u => Unary(u),
+            ArrayCreationExpressionSyntax a => ArrayCreation(a),
             ObjectCreationExpressionSyntax o => ObjectCreation(o),
             PredefinedCastExpressionSyntax c => PredefinedCast(c),
-            CTypeExpressionSyntax c => $"({Type(c.Type)}){Expr(c.Expression)}",
-            DirectCastExpressionSyntax c => $"({Type(c.Type)}){Expr(c.Expression)}",
-            TryCastExpressionSyntax c => $"{Expr(c.Expression)} as {Type(c.Type)}",
+            CTypeExpressionSyntax c => CType(c),
+            DirectCastExpressionSyntax c => ParenthesizedCast(c.Expression, c.Type),
+            TryCastExpressionSyntax c => $"(({Expr(c.Expression)}) as {Type(c.Type)})",
             TernaryConditionalExpressionSyntax c => $"{Expr(c.Condition)} ? {Expr(c.WhenTrue)} : {Expr(c.WhenFalse)}",
             _ => UnsupportedExpression(node)
         };
@@ -1094,6 +1099,97 @@ public sealed class VbToCSharpConverter
     {
         var constructor = _model.GetSymbolInfo(expression).Symbol as IMethodSymbol;
         return $"new {Type(expression.Type)}({Arguments(expression.ArgumentList, constructor?.Parameters ?? default)})";
+    }
+
+    /// <summary>VB配列生成式の要素型、Rank、上限値および初期化子をC#配列生成式へ変換します。</summary>
+    private string ArrayCreation(ArrayCreationExpressionSyntax expression)
+    {
+        if (_model.GetTypeInfo(expression).Type is not IArrayTypeSymbol array ||
+            CSharpTypeName(array.ElementType) is not { } elementType)
+            return UnsupportedExpression(expression);
+
+        if (expression.Initializer is not null)
+        {
+            var rank = "[" + new string(',', array.Rank - 1) + "]";
+            return $"new {elementType}{rank} {CollectionInitializer(expression.Initializer)}";
+        }
+
+        var bounds = expression.ArrayBounds?.Arguments.OfType<SimpleArgumentSyntax>().ToArray() ?? [];
+        if (bounds.Length == 0 || bounds.Length != array.Rank)
+        {
+            Review(expression, ReasonCode.UnsupportedSyntax, "Array creation bounds could not be converted safely");
+            return $"/* ManualReviewRequired */ {expression}";
+        }
+        return $"new {elementType}[{string.Join(", ", bounds.Select(x => $"({Expr(x.Expression)}) + 1"))}]";
+    }
+
+    /// <summary>VB配列・コレクション初期化子を入れ子構造と要素式を保ってC#初期化子へ変換します。</summary>
+    private string CollectionInitializer(CollectionInitializerSyntax initializer) =>
+        "{ " + string.Join(", ", initializer.Initializers.Select(x =>
+            x is CollectionInitializerSyntax nested ? CollectionInitializer(nested) : Expr(x))) + " }";
+
+    /// <summary>CTypeを意味解析し、VB組み込み型はConversions、参照型等は括弧付きC#キャストへ変換します。</summary>
+    private string CType(CTypeExpressionSyntax expression)
+    {
+        var targetType = _model.GetTypeInfo(expression).Type ?? _model.GetTypeInfo(expression.Type).Type;
+        var sourceType = _model.GetTypeInfo(expression.Expression).Type;
+        if (targetType is null || sourceType is null)
+        {
+            Review(expression, ReasonCode.UnresolvedSymbol, "CType source or target type could not be resolved.");
+            return $"/* ManualReviewRequired */ {expression}";
+        }
+
+        var conversion = _model.ClassifyConversion(expression.Expression, targetType);
+        if (!conversion.Exists)
+        {
+            Review(expression, ReasonCode.UnsupportedSyntax, "CType conversion could not be classified safely.");
+            return $"/* ManualReviewRequired */ {expression}";
+        }
+
+        if (conversion.IsIdentity) return $"({Expr(expression.Expression)})";
+        if (conversion.IsUserDefined || targetType.TypeKind == TypeKind.Enum ||
+            targetType.SpecialType == SpecialType.System_Object ||
+            VisualBasicConversionMethod(targetType) is null)
+            return ParenthesizedCast(expression.Expression, expression.Type);
+
+        return VisualBasicConversion(expression, expression.Expression, targetType,
+            VisualBasicConversionMethod(targetType)!);
+    }
+
+    /// <summary>DirectCast等のC#明示キャストを後続メンバーアクセスにも安全な括弧付き式で生成します。</summary>
+    private string ParenthesizedCast(ExpressionSyntax expression, TypeSyntax targetType) =>
+        $"(({Type(targetType)})({Expr(expression)}))";
+
+    /// <summary>変換先組み込み型に対応するMicrosoft.VisualBasic Conversionsメソッド名を返します。</summary>
+    private static string? VisualBasicConversionMethod(ITypeSymbol targetType) => targetType.SpecialType switch
+    {
+        SpecialType.System_Boolean => "ToBoolean", SpecialType.System_Byte => "ToByte",
+        SpecialType.System_SByte => "ToSByte", SpecialType.System_Int16 => "ToShort",
+        SpecialType.System_UInt16 => "ToUShort", SpecialType.System_Int32 => "ToInteger",
+        SpecialType.System_UInt32 => "ToUInteger", SpecialType.System_Int64 => "ToLong",
+        SpecialType.System_UInt64 => "ToULong", SpecialType.System_Single => "ToSingle",
+        SpecialType.System_Double => "ToDouble", SpecialType.System_Decimal => "ToDecimal",
+        SpecialType.System_Char => "ToChar", SpecialType.System_DateTime => "ToDate",
+        SpecialType.System_String => "ToString",
+        _ => null
+    };
+
+    /// <summary>CTypeのVB互換変換をMicrosoft.VisualBasic.CompilerServices.Conversions呼び出しとして生成します。</summary>
+    private string VisualBasicConversion(CTypeExpressionSyntax origin, ExpressionSyntax expression,
+        ITypeSymbol targetType, string method)
+    {
+        var conversions = _model.Compilation.GetTypeByMetadataName("Microsoft.VisualBasic.CompilerServices.Conversions");
+        if (conversions is null)
+        {
+            Review(origin, ReasonCode.MissingReference, "Microsoft.VisualBasic.CompilerServices.Conversions could not be resolved.");
+            return $"/* ManualReviewRequired */ {origin}";
+        }
+        var value = expression.IsKind(VBSyntaxKind.NothingLiteralExpression) ? "(object)null" : Expr(expression);
+        var after = $"{VisualBasicRuntimeTypeAccess(conversions)}.{method}({value})";
+        Record(origin, FixType.VbRuntimeCall, after,
+            new SymbolClassification(ExpressionMeaning.Value, conversions, targetType,
+                $"VB CType conversion mapped to Conversions.{method}"));
+        return after;
     }
 
     /// <summary>CIntやCStrなどのVB組み込み変換をConversionsクラス呼び出しへ変換します。</summary>

@@ -1408,6 +1408,121 @@ End Class
         Assert.That(compiled.Type.GetMethod("Run")!.Invoke(compiled.Instance, [value]), Is.EqualTo(expected));
     }
 
+    /// <summary>CTypeの数値・文字列変換はVB互換Conversionsを使い、参照型キャストは後続呼び出しを含めて正しく括ります。</summary>
+    [Test]
+    public void Converts_ctype_with_vb_semantics_and_safe_parentheses()
+    {
+        var source = """
+Public Class CTypeTarget
+    Public Function Text() As String
+        Return "target"
+    End Function
+End Class
+Public Class CTypeUsage
+    Public Function Rounded(value As Double) As Integer
+        Return CType(value, Integer)
+    End Function
+    Public Function Parsed(value As Object) As Integer
+        Return CType(value, Integer)
+    End Function
+    Public Function TargetText(value As Object) As String
+        Return CType(value, CTypeTarget).Text()
+    End Function
+End Class
+""";
+        var tree = VisualBasicSyntaxTree.ParseText(source, path: "ctype.vb");
+        var compilation = CreateCompilation(tree);
+        var result = new VbToCSharpConverter().Convert(tree, compilation.GetSemanticModel(tree), "Test");
+        Assert.Multiple(() =>
+        {
+            Assert.That(result.CSharp, Does.Contain("VBConversions.ToInteger(value)"));
+            Assert.That(result.CSharp, Does.Contain("((CTypeTarget)(value)).Text()"));
+        });
+        var compiled = CompileAndCreate(result, compilation, "CTypeUsage");
+        Assert.That(compiled.Type.GetMethod("Rounded")!.Invoke(compiled.Instance, [2.5d]), Is.EqualTo(2));
+        Assert.That(compiled.Type.GetMethod("Parsed")!.Invoke(compiled.Instance, ["123"]), Is.EqualTo(123));
+    }
+
+    /// <summary>Moduleの暗黙Sharedフィールド、プロパティ、メソッドをstatic class内のstaticメンバーとして生成します。</summary>
+    [Test]
+    public void Converts_implicit_shared_module_members_to_static_members()
+    {
+        var source = """
+Friend Module Resources
+    Private resourceCulture As Global.System.Globalization.CultureInfo
+    Friend Property Culture As Global.System.Globalization.CultureInfo
+        Get
+            Return resourceCulture
+        End Get
+        Set(value As Global.System.Globalization.CultureInfo)
+            resourceCulture = value
+        End Set
+    End Property
+    Friend Function ResourceName() As String
+        Return "sample"
+    End Function
+End Module
+""";
+        var tree = VisualBasicSyntaxTree.ParseText(source, path: "Resources.Designer.vb");
+        var compilation = CreateCompilation(tree);
+        var result = new VbToCSharpConverter().Convert(tree, compilation.GetSemanticModel(tree), "Test");
+        Assert.Multiple(() =>
+        {
+            Assert.That(result.CSharp, Does.Contain("private static global::System.Globalization.CultureInfo resourceCulture;"));
+            Assert.That(result.CSharp, Does.Contain("internal static global::System.Globalization.CultureInfo Culture"));
+            Assert.That(result.CSharp, Does.Contain("internal static string ResourceName()"));
+        });
+        AssertGeneratedCompiles(result, compilation, "Resources");
+    }
+
+    /// <summary>DesignerのISupportInitializeキャストを括り、BeginInitおよびEndInitをキャスト後の値へ呼び出します。</summary>
+    [Test]
+    public void Converts_designer_begin_init_casts_with_safe_parentheses()
+    {
+        var source = """
+Public Class DesignerUsage
+    Public Grid As Global.System.Windows.Forms.DataGridView
+    Public Sub InitializeComponent()
+        CType(Me.Grid, Global.System.ComponentModel.ISupportInitialize).BeginInit()
+        DirectCast(Me.Grid, Global.System.ComponentModel.ISupportInitialize).EndInit()
+    End Sub
+End Class
+""";
+        var tree = VisualBasicSyntaxTree.ParseText(source, path: "Form1.Designer.vb");
+        var compilation = CreateCompilation(tree);
+        var result = new VbToCSharpConverter().Convert(tree, compilation.GetSemanticModel(tree), "Test");
+        Assert.Multiple(() =>
+        {
+            Assert.That(result.CSharp, Does.Contain("((global::System.ComponentModel.ISupportInitialize)(this.Grid)).BeginInit()"));
+            Assert.That(result.CSharp, Does.Contain("((global::System.ComponentModel.ISupportInitialize)(this.Grid)).EndInit()"));
+        });
+        AssertGeneratedCompiles(result, compilation, "DesignerUsage");
+    }
+
+    /// <summary>DesignerのAddRangeで使うVB配列生成をC#の型付き配列初期化子へ変換します。</summary>
+    [Test]
+    public void Converts_designer_add_range_array_initializer()
+    {
+        var source = """
+Public Class MenuDesignerUsage
+    Public menuStrip1 As Global.System.Windows.Forms.MenuStrip
+    Public toolStripMenuItem1 As Global.System.Windows.Forms.ToolStripMenuItem
+    Public toolStripMenuItem4 As Global.System.Windows.Forms.ToolStripMenuItem
+    Public Sub InitializeComponent()
+        Me.menuStrip1.Items.AddRange(New Global.System.Windows.Forms.ToolStripItem() {
+            Me.toolStripMenuItem1,
+            Me.toolStripMenuItem4})
+    End Sub
+End Class
+""";
+        var tree = VisualBasicSyntaxTree.ParseText(source, path: "Menu.Designer.vb");
+        var compilation = CreateCompilation(tree);
+        var result = new VbToCSharpConverter().Convert(tree, compilation.GetSemanticModel(tree), "Test");
+        Assert.That(result.CSharp, Does.Contain(
+            "new global::System.Windows.Forms.ToolStripItem[] { this.toolStripMenuItem1, this.toolStripMenuItem4 }"));
+        AssertGeneratedCompiles(result, compilation, "MenuDesignerUsage");
+    }
+
     /// <summary>VBソースの最後の初期化式と対応するSemanticModelを返します。</summary>
     private static (ExpressionSyntax Expression, SemanticModel Model) ParseInitializer(string source)
     {

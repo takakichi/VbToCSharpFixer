@@ -80,6 +80,12 @@
 | `Identifier` | Identifierと暗黙Method呼び出しを変換する |
 | `Arguments` | 引数リストを変換し、必要なEnum変換を適用する |
 | `ObjectCreation` | Object生成式とコンストラクター引数を変換する |
+| `ArrayCreation` | VB配列生成式の型、Rank、上限値、初期化子をC#配列生成式へ変換する |
+| `CollectionInitializer` | 配列・コレクション初期化子を入れ子構造を保って変換する |
+| `CType` | CTypeを意味解析し、VB互換ConversionsまたはC#明示キャストへ変換する |
+| `ParenthesizedCast` | DirectCast等を後続メンバーアクセスに安全な括弧付きキャストへ変換する |
+| `VisualBasicConversionMethod` | 組み込み変換先型をVB Conversionsメソッド名へ対応付ける |
+| `VisualBasicConversion` | CTypeのVB互換変換呼び出しを生成して変換ログへ記録する |
 | `PredefinedCast` | CInt、CStrなどをVB互換Conversions呼び出しへ変換する |
 | `ExprForTarget` | Enumと整数型間で必要な明示キャストを追加する |
 | `IsInsideDeclaringEnum` | Enum初期値内の同一Enumメンバー参照か判定する |
