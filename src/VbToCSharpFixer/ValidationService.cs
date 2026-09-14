@@ -16,6 +16,8 @@ public sealed class ValidationService
         IEnumerable<MetadataReference> references,
         string assemblyName)
     {
+        // 元プロジェクトの参照で生成ソース間の整合性を調べる補助検証。
+        // 実際のターゲットフレームワーク、MSBuild設定、リソースの検証は生成プロジェクトのビルドで行う。
         var trees = sources.Select(x => CSharpSyntaxTree.ParseText(x.Source, path: x.Path));
         var compatibleReferences = references.Select(ToPortableReference).OfType<MetadataReference>();
         return CSharpCompilation.Create(

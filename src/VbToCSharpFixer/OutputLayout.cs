@@ -43,13 +43,13 @@ public sealed class OutputLayout
     {
         var sourceDirectory = project.FilePath is null ? null : Path.GetDirectoryName(project.FilePath);
         var relative = sourceDirectory is null ? Path.GetFileName(sourcePath) : Path.GetRelativePath(sourceDirectory, sourcePath);
-        relative = LegacyProjectMaterializer.MapProjectPath(Path.ChangeExtension(relative, ".cs"));
+        relative = ProjectPathMapper.Map(Path.ChangeExtension(relative, ".cs"));
         return SafeCombine(ProjectDirectory(project), relative, project.Name);
     }
 
     /// <summary>プロジェクト相対パスを出力側の絶対パスへ変換します。</summary>
     public string PathInProject(Project project, string relativePath) =>
-        SafeCombine(ProjectDirectory(project), LegacyProjectMaterializer.MapProjectPath(relativePath), project.Name);
+        SafeCombine(ProjectDirectory(project), ProjectPathMapper.Map(relativePath), project.Name);
 
     /// <summary>出力領域外への逸脱を防ぎながらルートと相対パスを結合します。</summary>
     private string SafeCombine(string root, string relative, string project)
@@ -57,6 +57,8 @@ public sealed class OutputLayout
         var fullRoot = Path.GetFullPath(root);
         var full = Path.GetFullPath(Path.Combine(fullRoot, relative));
         if (IsWithin(fullRoot, full) && IsWithin(OutputBase, full)) return full;
+        // 相対パスがプロジェクト外を指す場合は出力領域内へ退避する。
+        // ここでは配置だけを決める。同名ファイルの一意性は保証しない。
         return Path.Combine(OutputBase, "_external", SafeName(project), SafeName(Path.GetFileName(relative)));
     }
 

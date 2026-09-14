@@ -93,9 +93,37 @@ public sealed class LegacyProjectMaterializerTests
 
         Assert.Multiple(() =>
         {
-        Assert.That(Directory.Exists(Path.Combine(output, "converted")), Is.False);
+            Assert.That(Directory.Exists(Path.Combine(output, "converted")), Is.False);
             Assert.That(result.FileOperations, Is.Not.Empty);
             Assert.That(result.FileOperations.All(x => x.Result is "Planned" or "Missing"), Is.True);
+        });
+    }
+
+    [Test]
+    public async Task Planning_preserves_copy_and_review_order_for_missing_and_external_items()
+    {
+        // コピー成功・欠落・外部参照が混在しても、XML項目の処理順で記録されることを守る。
+        File.Delete(Path.Combine(Path.GetDirectoryName(_projectPath)!, "Assets", "icon.bin"));
+        var loaded = await CreateLoadedProject();
+        var output = Path.Combine(_root, "ordered");
+        var normal = new Options(null, _projectPath, null, null, output, false, false);
+        var dry = await new LegacyProjectMaterializer().MaterializeAsync(normal with { DryRun = true }, [loaded]);
+        Assert.That(Directory.Exists(output), Is.False);
+        var actual = await new LegacyProjectMaterializer().MaterializeAsync(normal, [loaded]);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(actual.FileOperations.Select(x => Path.GetFileName(x.SourcePath)), Is.EqualTo(new[]
+            {
+                "Form1.resx", "Resources.resx", "app.config", "icon.bin", "Company.Common.dll", "External.dll", "LegacyApp.vbproj"
+            }));
+            Assert.That(actual.ManualReviews.Select(x => x.ReasonCode), Is.EqualTo(new[]
+            {
+                ReasonCode.MissingContentFile, ReasonCode.ExternalLinkedFile, ReasonCode.MissingProjectFile
+            }));
+            Assert.That(dry.FileOperations.Select(x => (x.SourcePath, x.DestinationPath, x.ItemType, x.Action, x.FileSize)),
+                Is.EqualTo(actual.FileOperations.Select(x => (x.SourcePath, x.DestinationPath, x.ItemType, x.Action, x.FileSize))));
+            Assert.That(dry.ManualReviews, Is.EqualTo(actual.ManualReviews));
         });
     }
 
