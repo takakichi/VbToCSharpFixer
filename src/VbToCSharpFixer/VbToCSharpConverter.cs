@@ -3,6 +3,7 @@ using System.Text;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.VisualBasic;
 using Microsoft.CodeAnalysis.VisualBasic.Syntax;
+using CSharpCompilation = Microsoft.CodeAnalysis.CSharp.CSharpCompilation;
 using CSharpSyntaxFacts = Microsoft.CodeAnalysis.CSharp.SyntaxFacts;
 using VBSyntaxKind = Microsoft.CodeAnalysis.VisualBasic.SyntaxKind;
 
@@ -24,6 +25,8 @@ public sealed class VbToCSharpConverter
     private readonly Stack<string> _selectEndLabels = new();
     private readonly Stack<IReadOnlyDictionary<string, string>> _labelMaps = new();
     private bool _needsVisualBasicUsing;
+    private Compilation? _referenceCompilationSource;
+    private CSharpCompilation? _csharpReferenceCompilation;
     private SemanticModel _model = null!;
     private string _project = "";
     private string _file = "";
@@ -130,7 +133,7 @@ public sealed class VbToCSharpConverter
                 WriteConstructor(c, output);
                 break;
             case MethodStatementSyntax declaration:
-                Line(output, MethodSignature(declaration) + ";");
+                Line(output, MethodSignature(declaration) + ";" + TrailingComment(declaration));
                 break;
             case PropertyBlockSyntax p:
                 WriteProperty(p, output);
@@ -162,6 +165,9 @@ public sealed class VbToCSharpConverter
                 break;
             case TryBlockSyntax t:
                 WriteTryBlock(t, output);
+                break;
+            case UsingBlockSyntax u:
+                WriteUsingBlock(u, output);
                 break;
             case ForBlockSyntax f:
                 WriteForBlock(f, output);
@@ -293,9 +299,13 @@ public sealed class VbToCSharpConverter
     /// <summary>VBメソッドブロックをC#メソッドとして出力します。</summary>
     private void WriteMethod(MethodBlockSyntax method, StringBuilder output)
     {
-        Line(output, MethodSignature(method.SubOrFunctionStatement));
+        Line(output, MethodSignature(method.SubOrFunctionStatement) + TrailingComment(method.SubOrFunctionStatement));
         WithLabelScope(method.Statements, () =>
-            Block(output, () => { foreach (var s in method.Statements) WriteStatement(s, output); }));
+            Block(output, () =>
+            {
+                foreach (var s in method.Statements) WriteStatement(s, output);
+                WriteLeadingComments(method.EndSubOrFunctionStatement, output);
+            }, TrailingComment(method.EndSubOrFunctionStatement)));
     }
 
     /// <summary>VBのSub NewをinstanceまたはSharedのC#コンストラクターへ変換します。</summary>
@@ -316,9 +326,80 @@ public sealed class VbToCSharpConverter
             skip = 1;
         }
         var statements = constructor.Statements.Skip(skip).ToArray();
-        Line(output, signature);
+        Line(output, signature + TrailingComment(statement));
         WithLabelScope(statements, () =>
-            Block(output, () => { foreach (var child in statements) WriteStatement(child, output); }));
+            Block(output, () =>
+            {
+                foreach (var child in statements) WriteStatement(child, output);
+                WriteLeadingComments(constructor.EndSubStatement, output);
+            }, TrailingComment(constructor.EndSubStatement)));
+    }
+
+    /// <summary>Usingの宣言または式を従来形式のC# usingブロックへ変換します。</summary>
+    private void WriteUsingBlock(UsingBlockSyntax block, StringBuilder output)
+    {
+        if (!TryUsingResources(block.UsingStatement, out var resources) || resources.Count == 0)
+        {
+            Review(block, ReasonCode.UnsupportedSyntax, "Using resources could not be converted safely");
+            Line(output, $"// ManualReviewRequired: unsupported UsingBlock: {OneLine(block.ToString())}");
+            return;
+        }
+
+        void WriteResource(int index)
+        {
+            var headerSuffix = index == 0 ? TrailingComment(block.UsingStatement) : "";
+            var endSuffix = index == 0 ? TrailingComment(block.EndUsingStatement) : "";
+            Line(output, $"using ({resources[index]}){headerSuffix}");
+            Block(output, () =>
+            {
+                if (index + 1 < resources.Count)
+                {
+                    WriteResource(index + 1);
+                    return;
+                }
+                foreach (var statement in block.Statements) WriteStatement(statement, output);
+                WriteLeadingComments(block.EndUsingStatement, output);
+            }, endSuffix);
+        }
+
+        WriteResource(0);
+    }
+
+    /// <summary>Using文の式または変数宣言を評価順序どおりのC#リソース指定へ変換します。</summary>
+    private bool TryUsingResources(UsingStatementSyntax statement, out IReadOnlyList<string> resources)
+    {
+        var converted = new List<string>();
+        if (statement.Expression is not null)
+        {
+            converted.Add(Expr(statement.Expression));
+            resources = converted;
+            return true;
+        }
+
+        foreach (var declarator in statement.Variables)
+        {
+            foreach (var name in declarator.Names)
+            {
+                if (_model.GetDeclaredSymbol(name) is not ILocalSymbol local ||
+                    CSharpTypeName(local.Type) is not { } type)
+                {
+                    resources = [];
+                    return false;
+                }
+
+                ExpressionSyntax? initializer = declarator.Initializer?.Value;
+                if (initializer is null && declarator.AsClause is AsNewClauseSyntax asNew)
+                    initializer = asNew.NewExpression;
+                if (initializer is null)
+                {
+                    resources = [];
+                    return false;
+                }
+                converted.Add($"{type} {EscapeIdentifier(name.Identifier.ValueText)} = {ExprForTarget(initializer, local.Type)}");
+            }
+        }
+        resources = converted;
+        return converted.Count > 0;
     }
 
     /// <summary>コンストラクター先頭のMyBase.NewまたはMe.NewをC# initializerへ変換します。</summary>
@@ -937,6 +1018,7 @@ public sealed class VbToCSharpConverter
             IdentifierNameSyntax id => Identifier(id, suppressImplicitCall),
             MeExpressionSyntax => "this",
             MyBaseExpressionSyntax => "base",
+            PredefinedTypeSyntax p => Type(p),
             LiteralExpressionSyntax literal => Literal(literal),
             ParenthesizedExpressionSyntax p => $"({Expr(p.Expression)})",
             BinaryExpressionSyntax b => Binary(b),
@@ -1090,8 +1172,80 @@ public sealed class VbToCSharpConverter
             var targetType = parameter is { IsParams: true, Type: IArrayTypeSymbol array } && index >= parameters.Length - 1
                 ? array.ElementType : parameter?.Type;
             var prefix = simple.NameColonEquals is null ? "" : EscapeIdentifier(simple.NameColonEquals.Name.Identifier.ValueText) + ": ";
+            var refKind = parameter is null ? RefKind.None : EffectiveRefKind(parameter);
+            if (parameter is not null && refKind is RefKind.Ref or RefKind.Out)
+            {
+                if (!IsSafeByReferenceArgument(simple.Expression, parameter, refKind))
+                {
+                    Review(simple, ReasonCode.UnsupportedSyntax,
+                        $"{refKind} argument requires VB copy-in/copy-back or could not be proven safe.");
+                    return prefix + $"/* ManualReviewRequired: {refKind} argument */ " + Expr(simple.Expression);
+                }
+                var modifier = refKind == RefKind.Out ? "out " : "ref ";
+                return prefix + modifier + Expr(simple.Expression);
+            }
             return prefix + ExprForTarget(simple.Expression, targetType);
         }));
+    }
+
+    /// <summary>refまたはout引数が型変換やVB copy-backを伴わない書き換え可能な格納場所か判定します。</summary>
+    private bool IsSafeByReferenceArgument(ExpressionSyntax expression, IParameterSymbol parameter, RefKind refKind)
+    {
+        if (expression is ParenthesizedExpressionSyntax) return false;
+        var argumentType = _model.GetTypeInfo(expression).Type;
+        if (argumentType is null || !SymbolEqualityComparer.Default.Equals(argumentType, parameter.Type)) return false;
+
+        if (expression is InvocationExpressionSyntax invocation)
+            return _classifier.ClassifyInvocation(invocation, _model).Meaning == ExpressionMeaning.Array;
+
+        if (expression is not IdentifierNameSyntax && expression is not MemberAccessExpressionSyntax) return false;
+        return _model.GetSymbolInfo(expression).Symbol switch
+        {
+            IParameterSymbol => true,
+            IFieldSymbol { IsConst: false, IsReadOnly: false } => true,
+            ILocalSymbol when refKind == RefKind.Out => true,
+            ILocalSymbol local => HasExplicitLocalInitialization(local),
+            _ => false
+        };
+    }
+
+    /// <summary>VBがRefへ正規化した参照先メタデータをC# Compilationで照合し、明示的なoutだけを復元します。</summary>
+    private RefKind EffectiveRefKind(IParameterSymbol parameter)
+    {
+        if (parameter.RefKind != RefKind.Ref || parameter.ContainingSymbol is not IMethodSymbol method ||
+            method.DeclaringSyntaxReferences.Length > 0)
+            return parameter.RefKind;
+
+        if (!ReferenceEquals(_referenceCompilationSource, _model.Compilation))
+        {
+            _referenceCompilationSource = _model.Compilation;
+            _csharpReferenceCompilation = CSharpCompilation.Create(
+                "VbToCSharpReferenceKinds", references: _model.Compilation.References);
+        }
+
+        var definition = method.ReducedFrom ?? method.OriginalDefinition;
+        var documentationId = definition.GetDocumentationCommentId();
+        if (documentationId is null || _csharpReferenceCompilation is null) return RefKind.Ref;
+        var csharpMethod = DocumentationCommentId.GetFirstSymbolForDeclarationId(documentationId, _csharpReferenceCompilation) as IMethodSymbol;
+        var ordinal = method.ReducedFrom is null ? parameter.Ordinal : parameter.Ordinal + 1;
+        return csharpMethod is not null && ordinal < csharpMethod.Parameters.Length &&
+               csharpMethod.Parameters[ordinal].RefKind == RefKind.Out
+            ? RefKind.Out
+            : RefKind.Ref;
+    }
+
+    /// <summary>refへ渡すローカル変数がC#でも宣言時に明示初期化されることを確認します。</summary>
+    private static bool HasExplicitLocalInitialization(ILocalSymbol local)
+    {
+        foreach (var reference in local.DeclaringSyntaxReferences)
+        {
+            var syntax = reference.GetSyntax();
+            var declarator = syntax.FirstAncestorOrSelf<VariableDeclaratorSyntax>();
+            if (declarator?.Initializer is not null || declarator?.AsClause is AsNewClauseSyntax) return true;
+            if (syntax.AncestorsAndSelf().Any(x => x is ForStatementSyntax or ForEachStatementSyntax or CatchStatementSyntax or UsingStatementSyntax))
+                return true;
+        }
+        return false;
     }
 
     /// <summary>Object生成式のコンストラクター引数にも必要なEnum変換を適用します。</summary>
@@ -1457,14 +1611,43 @@ public sealed class VbToCSharpConverter
     /// <summary>VBの先行コメントをC#行コメントとして出力します。</summary>
     private void WriteLeadingComments(SyntaxNode node, StringBuilder output)
     {
-        foreach (var trivia in node.GetLeadingTrivia().Where(t => t.IsKind(VBSyntaxKind.CommentTrivia)))
-            Line(output, "//" + trivia.ToString().TrimStart('\''));
+        foreach (var trivia in node.GetLeadingTrivia())
+        {
+            if (trivia.IsKind(VBSyntaxKind.CommentTrivia))
+            {
+                Line(output, CommentText(trivia));
+                continue;
+            }
+            if (!trivia.IsKind(VBSyntaxKind.DocumentationCommentTrivia)) continue;
+            foreach (var line in trivia.ToFullString().Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n'))
+            {
+                var text = line.TrimStart();
+                if (text.StartsWith("'''", StringComparison.Ordinal))
+                    Line(output, "///" + text[3..]);
+            }
+        }
+    }
+
+    /// <summary>VB通常コメントを内容を維持したC#行コメントへ変換します。</summary>
+    private static string CommentText(SyntaxTrivia trivia)
+    {
+        var text = trivia.ToString().TrimStart();
+        if (text.StartsWith("'", StringComparison.Ordinal)) return "//" + text[1..];
+        if (text.StartsWith("REM", StringComparison.OrdinalIgnoreCase)) return "//" + text[3..];
+        return "// " + text;
+    }
+
+    /// <summary>宣言行またはブロック終了行のVB末尾コメントをC#末尾コメントとして返します。</summary>
+    private static string TrailingComment(SyntaxNode node)
+    {
+        var comment = node.GetTrailingTrivia().FirstOrDefault(x => x.IsKind(VBSyntaxKind.CommentTrivia));
+        return comment.RawKind == 0 ? "" : " " + CommentText(comment);
     }
 
     /// <summary>インデントを管理しながらC#の波括弧ブロックを出力します。</summary>
-    private void Block(StringBuilder output, Action body)
+    private void Block(StringBuilder output, Action body, string closingSuffix = "")
     {
-        Line(output, "{"); _indent++; body(); _indent--; Line(output, "}");
+        Line(output, "{"); _indent++; body(); _indent--; Line(output, "}" + closingSuffix);
     }
 
     /// <summary>現在のインデントを付けて1行出力します。</summary>

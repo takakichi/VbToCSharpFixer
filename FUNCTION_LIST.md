@@ -41,6 +41,8 @@
 | `WriteMethod` | メソッドブロックを出力する |
 | `WriteConstructor` | Sub Newをinstance／Sharedコンストラクターとして出力する |
 | `TryConstructorInitializer` | MyBase.New／Me.Newをbase／this initializerへ変換する |
+| `WriteUsingBlock` | Usingを従来形式のC# usingブロックへ変換し、複数リソースを入れ子にする |
+| `TryUsingResources` | Usingの式または変数宣言を評価順序どおりのリソース指定へ変換する |
 | `WriteSingleLineIf` | 単行IfのThen／ElseをC#ブロックへ変換する |
 | `WriteSelectBlock` | Select Caseを選択値の一度評価とif／else ifへ変換する |
 | `SelectCaseCondition` | Caseの単一値、範囲、比較句を条件式へ変換する |
@@ -78,7 +80,10 @@
 | `IndexerTarget` | ItemプロパティをC# Indexer対象へ変換する |
 | `Member` | MemberAccessと引数なしMethodを変換する |
 | `Identifier` | Identifierと暗黙Method呼び出しを変換する |
-| `Arguments` | 引数リストを変換し、必要なEnum変換を適用する |
+| `Arguments` | 引数リストを変換し、必要なEnum変換と安全性を確認できたref／outを適用する |
+| `IsSafeByReferenceArgument` | ref／out引数が型変換やcopy-back不要の書き換え可能な格納場所か判定する |
+| `EffectiveRefKind` | VBでRefに正規化された参照先メタデータをC# Compilationで照合してoutを復元する |
+| `HasExplicitLocalInitialization` | refへ渡すローカル変数がC#でも明示初期化済みか判定する |
 | `ObjectCreation` | Object生成式とコンストラクター引数を変換する |
 | `ArrayCreation` | VB配列生成式の型、Rank、上限値、初期化子をC#配列生成式へ変換する |
 | `CollectionInitializer` | 配列・コレクション初期化子を入れ子構造を保って変換する |
@@ -107,7 +112,9 @@
 | `UnsupportedExpression` | 未対応式をManualReviewRequiredにする |
 | `Record` | FixResultを記録する |
 | `Review` | ManualReviewItemを記録する |
-| `WriteLeadingComments` | VBコメントをC#コメントへ変換する |
+| `WriteLeadingComments` | VB通常コメントとXML文書コメントをC#コメントへ変換する |
+| `CommentText` | VBのアポストロフィ／REMコメントをC#行コメントへ変換する |
+| `TrailingComment` | 宣言行およびブロック終了行の末尾コメントを保持する |
 | `Block` | C#ブロックとインデントを出力する |
 | `Line` | インデント付きの1行を出力する |
 | `OneLine` | ログ用に文字列を1行化する |

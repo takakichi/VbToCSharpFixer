@@ -1523,6 +1523,188 @@ End Class
         AssertGeneratedCompiles(result, compilation, "MenuDesignerUsage");
     }
 
+    /// <summary>宣言、既存式および複数リソースのUsingを破棄順序を保つC# usingブロックへ変換します。</summary>
+    [Test]
+    public void Converts_using_blocks_and_multiple_resources()
+    {
+        var source = """
+Imports System.IO
+Public Class UsingUsage
+    Public Function Run() As Long
+        Using stream As New MemoryStream()
+            stream.WriteByte(1)
+            Return stream.Length
+        End Using
+    End Function
+    Public Sub UseExisting(stream As MemoryStream)
+        Using stream
+            stream.WriteByte(1)
+        End Using
+    End Sub
+    Public Sub UseInferred()
+        Using inferred = New MemoryStream()
+            inferred.WriteByte(1)
+        End Using
+    End Sub
+    Public Sub UseMultiple()
+        Using stream As New MemoryStream(), writer As New BinaryWriter(stream)
+            writer.Write(1)
+        End Using
+    End Sub
+End Class
+""";
+        var tree = VisualBasicSyntaxTree.ParseText(source, path: "using.vb");
+        var compilation = CreateCompilation(tree);
+        var errors = compilation.GetDiagnostics().Where(x => x.Severity == DiagnosticSeverity.Error).ToArray();
+        Assert.That(errors, Is.Empty, string.Join("\n", errors.Select(x => x.ToString())));
+        var result = new VbToCSharpConverter().Convert(tree, compilation.GetSemanticModel(tree), "Test");
+        Assert.Multiple(() =>
+        {
+            Assert.That(result.CSharp, Does.Contain("using (global::System.IO.MemoryStream stream = new MemoryStream())"));
+            Assert.That(result.CSharp, Does.Contain("using (stream)"));
+            Assert.That(result.CSharp, Does.Contain("using (global::System.IO.MemoryStream inferred = new MemoryStream())"));
+            Assert.That(result.CSharp, Does.Contain("using (global::System.IO.BinaryWriter writer = new BinaryWriter(stream))"));
+            Assert.That(result.CSharp, Does.Not.Contain("unsupported UsingBlock"));
+        });
+        var compiled = CompileAndCreate(result, compilation, "UsingUsage");
+        Assert.That(compiled.Type.GetMethod("Run")!.Invoke(compiled.Instance, null), Is.EqualTo(1L));
+        var existing = new MemoryStream();
+        compiled.Type.GetMethod("UseExisting")!.Invoke(compiled.Instance, [existing]);
+        Assert.That(existing.CanWrite, Is.False);
+    }
+
+    /// <summary>メソッドのXML文書、通常、宣言行末および終了位置コメントをC#へ保持します。</summary>
+    [Test]
+    public void Preserves_method_documentation_and_boundary_comments()
+    {
+        var source = """
+Public Class CommentedMethods
+    ''' <summary>
+    ''' 日本語の説明です。
+    ''' </summary>
+    ''' <param name="value">入力値</param>
+    ''' <returns>結果</returns>
+    Public Function Echo(value As String) As String ' 宣言行コメント
+        Return value
+        ' End Function直前コメント
+    End Function ' 終了行コメント
+
+    ' 通常のメソッドコメント
+    Public Sub Run()
+    End Sub
+End Class
+""";
+        var tree = VisualBasicSyntaxTree.ParseText(source, path: "method-comments.vb");
+        var compilation = CreateCompilation(tree);
+        var result = new VbToCSharpConverter().Convert(tree, compilation.GetSemanticModel(tree), "Test");
+        Assert.Multiple(() =>
+        {
+            Assert.That(result.CSharp, Does.Contain("/// <summary>"));
+            Assert.That(result.CSharp, Does.Contain("/// 日本語の説明です。"));
+            Assert.That(result.CSharp, Does.Contain("/// <param name=\"value\">入力値</param>"));
+            Assert.That(result.CSharp, Does.Contain("public string Echo(string value) // 宣言行コメント"));
+            Assert.That(result.CSharp, Does.Contain("// End Function直前コメント"));
+            Assert.That(result.CSharp, Does.Contain("} // 終了行コメント"));
+            Assert.That(result.CSharp, Does.Contain("// 通常のメソッドコメント"));
+        });
+        AssertGeneratedCompiles(result, compilation, "CommentedMethods");
+    }
+
+    /// <summary>型と格納場所を確定できる呼び出しだけにrefまたはoutを付加します。</summary>
+    [Test]
+    public void Converts_only_proven_safe_ref_and_out_arguments()
+    {
+        var source = """
+Public Class RefOutUsage
+    Private Sub Increment(ByRef value As Integer)
+        value += 1
+    End Sub
+    Public Function Run(text As String) As Integer
+        Dim value As Integer = 1
+        Increment(value)
+        Dim parsed As Integer
+        Integer.TryParse(text, parsed)
+        Return value + parsed
+    End Function
+End Class
+""";
+        var tree = VisualBasicSyntaxTree.ParseText(source, path: "ref-out.vb");
+        var compilation = CreateCompilation(tree);
+        var errors = compilation.GetDiagnostics().Where(x => x.Severity == DiagnosticSeverity.Error).ToArray();
+        Assert.That(errors, Is.Empty, string.Join("\n", errors.Select(x => x.ToString())));
+        var result = new VbToCSharpConverter().Convert(tree, compilation.GetSemanticModel(tree), "Test");
+        Assert.Multiple(() =>
+        {
+            Assert.That(result.CSharp, Does.Contain("Increment(ref value);"));
+            Assert.That(result.CSharp, Does.Contain("int.TryParse(text, out parsed);"));
+            Assert.That(result.ManualReviews, Is.Empty);
+        });
+        var compiled = CompileAndCreate(result, compilation, "RefOutUsage");
+        Assert.That(compiled.Type.GetMethod("Run")!.Invoke(compiled.Instance, ["42"]), Is.EqualTo(44));
+    }
+
+    /// <summary>変換式やPropertyをByRefへ渡すVB copy-backケースは推測せずレビュー対象にします。</summary>
+    [Test]
+    public void Flags_unsafe_byref_copy_back_arguments_for_manual_review()
+    {
+        var source = """
+Public Class UnsafeByRefUsage
+    Public Property Number As Integer
+    Private Sub SetValue(ByRef value As Integer)
+        value = 1
+    End Sub
+    Public Sub Run(value As Object)
+        SetValue(CInt(value))
+        SetValue(Number)
+    End Sub
+End Class
+""";
+        var tree = VisualBasicSyntaxTree.ParseText(source, path: "unsafe-byref.vb");
+        var compilation = CreateCompilation(tree);
+        var result = new VbToCSharpConverter().Convert(tree, compilation.GetSemanticModel(tree), "Test");
+        Assert.Multiple(() =>
+        {
+            Assert.That(result.CSharp, Does.Contain("VBConversions.ToInteger(value)"));
+            Assert.That(result.CSharp, Does.Contain("ManualReviewRequired: Ref argument"));
+            Assert.That(result.ManualReviews.Count(x => x.Details.Contains("copy-in/copy-back", StringComparison.Ordinal)), Is.EqualTo(2));
+        });
+    }
+
+    /// <summary>式の受信側に現れるStringなどのVB組み込み型をC#型名へ変換します。</summary>
+    [Test]
+    public void Converts_predefined_type_member_access_in_expressions()
+    {
+        var source = """
+Imports System
+Public Class PredefinedTypeUsage
+    Public Function CreateError(value As Object) As Exception
+        Return New Exception(String.Format("{0}", value))
+    End Function
+    Public Function EmptyText() As String
+        Return String.Empty
+    End Function
+    Public Function ParseNumber(text As String) As Integer
+        Return Integer.Parse(text)
+    End Function
+End Class
+""";
+        var tree = VisualBasicSyntaxTree.ParseText(source, path: "predefined-members.vb");
+        var compilation = CreateCompilation(tree);
+        var result = new VbToCSharpConverter().Convert(tree, compilation.GetSemanticModel(tree), "Test");
+        Assert.Multiple(() =>
+        {
+            Assert.That(result.CSharp, Does.Contain("new Exception(string.Format(\"{0}\", value))"));
+            Assert.That(result.CSharp, Does.Contain("return string.Empty;"));
+            Assert.That(result.CSharp, Does.Contain("return int.Parse(text);"));
+            Assert.That(result.CSharp, Does.Not.Contain("default.Format"));
+            Assert.That(result.CSharp, Does.Not.Contain("default.Empty"));
+        });
+        var compiled = CompileAndCreate(result, compilation, "PredefinedTypeUsage");
+        var error = (Exception)compiled.Type.GetMethod("CreateError")!.Invoke(compiled.Instance, [123])!;
+        Assert.That(error.Message, Is.EqualTo("123"));
+        Assert.That(compiled.Type.GetMethod("ParseNumber")!.Invoke(compiled.Instance, ["42"]), Is.EqualTo(42));
+    }
+
     /// <summary>VBソースの最後の初期化式と対応するSemanticModelを返します。</summary>
     private static (ExpressionSyntax Expression, SemanticModel Model) ParseInitializer(string source)
     {

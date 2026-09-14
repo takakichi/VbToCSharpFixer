@@ -95,6 +95,8 @@ array[i];
 Strings.Mid(text, 1, 3);
 ```
 
+呼び出し引数が参照渡しの場合は、解決済みパラメーターと引数の型・格納場所を確認します。VBが外部APIのoutをRefへ正規化している場合は、同じ参照アセンブリによるC# Compilationでメタデータを照合します。型変換やcopy-backが必要な引数は推測せずManualReviewRequiredにします。
+
 ## 5. VBランタイム関数・定数
 
 1. Assemblyが`Microsoft.VisualBasic`または`Microsoft.VisualBasic.Core`か確認する
@@ -121,6 +123,15 @@ Strings.Mid(text, 1, 3);
 2. Catchを元の順序で出力する
 3. 例外変数、例外型、WhenフィルターをC#のcatchへ変換する
 4. Finally本体を再帰的に変換する
+
+### Using
+
+1. 式形式または変数宣言形式を判定する
+2. 宣言変数の型をSemanticModelから取得する
+3. `As New`を含む初期化式をC#へ変換する
+4. 複数リソースは左から右に生成され、逆順にDisposeされる入れ子のusingブロックへ変換する
+5. Using本体と開始・終了位置のコメントを再帰的に出力する
+6. 型または初期化式を解決できない場合はManualReviewRequiredにする
 
 ### For
 
