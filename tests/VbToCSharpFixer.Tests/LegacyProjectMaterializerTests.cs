@@ -100,7 +100,7 @@ public sealed class LegacyProjectMaterializerTests
     }
 
     [Test]
-    public async Task Planning_preserves_copy_and_review_order_for_missing_and_external_items()
+    public async Task Preserves_copy_and_review_order_for_missing_and_external_items()
     {
         // コピー成功・欠落・外部参照が混在しても、XML項目の処理順で記録されることを守る。
         File.Delete(Path.Combine(Path.GetDirectoryName(_projectPath)!, "Assets", "icon.bin"));
@@ -125,6 +125,61 @@ public sealed class LegacyProjectMaterializerTests
                 Is.EqualTo(actual.FileOperations.Select(x => (x.SourcePath, x.DestinationPath, x.ItemType, x.Action, x.FileSize))));
             Assert.That(dry.ManualReviews, Is.EqualTo(actual.ManualReviews));
         });
+    }
+
+    [TestCase("Content", false)]
+    [TestCase("Content", true)]
+    [TestCase("Reference", false)]
+    [TestCase("Reference", true)]
+    [TestCase("Import", false)]
+    [TestCase("Import", true)]
+    public async Task Later_item_observes_file_created_by_earlier_copy(string firstKind, bool dryRun)
+    {
+        // 一括の存在確認では、後続項目を誤ってMissingにしてしまう。
+        // Content、HintPath、Importのいずれのコピー経路でも項目の順序を維持する。
+        var output = Path.Combine(_root, "chain-out");
+        var projectOutput = Path.Combine(output, "converted", "LegacyApp");
+        var projectDirectory = Path.GetDirectoryName(_projectPath)!;
+        var firstSource = firstKind == "Reference" ? "lib/Company.Common.dll" : "app.config";
+        var firstOutput = Path.Combine(projectOutput, firstSource.Replace('/', Path.DirectorySeparatorChar));
+        var secondInclude = Path.GetRelativePath(projectDirectory, firstOutput);
+        var firstItem = firstKind switch
+        {
+            "Reference" => new XElement("Reference", new XAttribute("Include", "Company.Common"), new XElement("HintPath", firstSource)),
+            "Import" => new XElement("Import", new XAttribute("Project", firstSource)),
+            _ => new XElement("Content", new XAttribute("Include", firstSource))
+        };
+        var secondItem = new XElement("Content", new XAttribute("Include", secondInclude), new XElement("Link", "copied.bin"));
+        var xml = firstKind == "Import"
+            ? new XDocument(new XElement("Project", firstItem, new XElement("ItemGroup", secondItem)))
+            : new XDocument(new XElement("Project", new XElement("ItemGroup", firstItem, secondItem)));
+        xml.Save(_projectPath);
+        var loaded = await CreateLoadedProject();
+
+        var result = await new LegacyProjectMaterializer().MaterializeAsync(
+            new Options(null, _projectPath, null, null, output, dryRun, false), [loaded]);
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(result.FileOperations.Select(x => x.Result), Is.EqualTo(dryRun
+                ? new[] { "Planned", "Missing", "Planned" }
+                : new[] { "Copied", "Copied", "Written" }));
+            Assert.That(result.ManualReviews.Select(x => x.ReasonCode), Is.EqualTo(dryRun
+                ? new[] { ReasonCode.MissingContentFile }
+                : new[] { ReasonCode.ExternalLinkedFile }));
+        });
+        if (dryRun)
+        {
+            Assert.That(Directory.Exists(output), Is.False);
+        }
+        else
+        {
+            Assert.That(File.ReadAllBytes(Path.Combine(projectOutput, "copied.bin")),
+                Is.EqualTo(File.ReadAllBytes(Path.Combine(projectDirectory, firstSource))));
+            var generatedXml = XDocument.Load(Path.Combine(projectOutput, "LegacyApp.csproj"));
+            Assert.That(generatedXml.Descendants("Content").Last().Attribute("Include")?.Value, Is.EqualTo("copied.bin"));
+            Assert.That(generatedXml.Descendants("Link"), Is.Empty);
+        }
     }
 
     /// <summary>Solution内のプロジェクトパスとVB Project Type GUIDの変換を検証します。</summary>

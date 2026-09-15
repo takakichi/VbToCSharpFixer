@@ -29,9 +29,8 @@ public sealed class LegacyProjectMaterializer
         foreach (var loaded in projects)
         {
             if (loaded.Project.FilePath is null) continue;
-            var plan = ProjectConversionPlanner.CreatePlan(options, layout, loaded.Project, projectOutputs,
-                sourceOutputs, files, changes, reviews);
-            if (plan is not null) await plan.ExecuteAsync(options.DryRun, cancellationToken);
+            await ProjectConverter.ConvertAsync(options, layout, loaded.Project, projectOutputs,
+                sourceOutputs, files, changes, reviews, cancellationToken);
         }
 
         var buildTarget = options.Solution is not null
