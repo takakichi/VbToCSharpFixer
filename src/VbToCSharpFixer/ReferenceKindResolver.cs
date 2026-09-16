@@ -19,9 +19,12 @@ internal sealed class ReferenceKindResolver
 
         if (!ReferenceEquals(_referenceCompilationSource, compilation))
         {
-            _referenceCompilationSource = compilation;
+            // ここへ来るのは参照DLLのメソッドだけ。ソース定義のByRefは上でそのまま返す。
+            // VBのCompilationReferenceをC# Compilationへ渡すとArgumentExceptionになる。
+            // out属性の照合にはDLLメタデータだけを使い、参照VBプロジェクトのビルド成否に依存させない。
             _csharpReferenceCompilation = CSharpCompilation.Create(
-                "VbToCSharpReferenceKinds", references: compilation.References);
+                "VbToCSharpReferenceKinds", references: compilation.References.OfType<PortableExecutableReference>());
+            _referenceCompilationSource = compilation;
         }
 
         var definition = method.ReducedFrom ?? method.OriginalDefinition;

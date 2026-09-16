@@ -8,6 +8,40 @@ namespace VbToCSharpFixer.Tests;
 [TestFixture]
 public sealed class ConversionSessionTests
 {
+    [TestCase(false)]
+    [TestCase(true)]
+    public void Resolves_metadata_out_alongside_visual_basic_project_reference(bool brokenDependency)
+    {
+        // DLLのout照合に、異言語のCompilationReferenceを直接渡してはいけない。
+        // 参照プロジェクトがemitできなくても、Integer.TryParseのout判定は可能。
+        var dependencyTree = VisualBasicSyntaxTree.ParseText("""
+Public Class Helper
+    Public Shared Sub SetValue(ByRef value As Integer)
+        value = 7
+    End Sub
+End Class
+""" + (brokenDependency ? "\nPublic Class Broken\nPublic Sub Run()\nUnknownCall()\nEnd Sub\nEnd Class" : ""));
+        var dependency = CreateCompilation(dependencyTree, "Dependency");
+        var tree = VisualBasicSyntaxTree.ParseText("""
+Public Class Caller
+    Public Sub Run()
+        Dim value As Integer = 0
+        Integer.TryParse("42", value)
+        Helper.SetValue(value)
+    End Sub
+End Class
+""", path: "project-reference.vb");
+        var compilation = CreateCompilation(tree, "Caller", dependency.ToMetadataReference());
+        var result = new VbToCSharpConverter().Convert(tree, compilation.GetSemanticModel(tree), "Caller");
+        Assert.Multiple(() =>
+        {
+            Assert.That(result.CSharp, Does.Contain("int.TryParse(\"42\", out value);"));
+            Assert.That(result.CSharp, Does.Contain("Helper.SetValue(ref value);"));
+            Assert.That(result.ManualReviews, Is.Empty);
+        });
+        if (!brokenDependency) AssertGeneratedCompiles(result, compilation, "Caller");
+    }
+
     [Test]
     public void Reference_kind_cache_changes_with_the_source_compilation()
     {

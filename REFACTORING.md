@@ -18,7 +18,7 @@
 ## 変更の意図
 
 - **変換状態をファイルごとに生成する。** 公開APIは維持し、`Convert`と`ConvertExpression`はそれぞれ新しい`ConversionSession`を使う。alias、一時変数、ラベル、レビュー項目の初期化漏れを防ぐ。
-- **参照キャッシュの寿命を分ける。** `ReferenceKindResolver`だけを変換器で保持し、元のCompilationが変われば参照照合用のC# Compilationを更新する。同じ変換器インスタンスの呼び出しは逐次実行する。
+- **参照キャッシュの寿命を分ける。** `ReferenceKindResolver`だけを変換器で保持し、元のCompilationが変われば参照照合用のC# Compilationを更新する。照合対象は参照DLLのメソッドであり、DLLメタデータだけを渡す。VBのCompilationReferenceをC#側へ直接渡さず、参照VBプロジェクトのemit成功にも依存しない。同じ変換器インスタンスの呼び出しは逐次実行する。
 - **構文の相互再帰を維持する。** 文から式、式から型へ進む処理は一つのセッションを共有するため、構文別の実装を`partial`ファイルに分けた。型シンボルの表記・参照照合・出力整形は独立クラスへ抽出した。
 - **型名の用途を区別する。** 完全修飾名と最小修飾名の規則を維持し、数値型の対応表を共通化した。構文由来の型表現は`ConversionSession.Declarations.cs`に置く。
 - **クラス分離と項目の処理順を両立する。** `ProjectConverter`が項目を順に処理し、`ProjectFileOperations`で存在確認・コピー・記録を完了してから、結果をXMLへ反映して次へ進む。全項目の存在確認を先に行う一括計画は使わない。最後にリソース親を検証し、XMLを保存して完了を記録する。
@@ -32,8 +32,8 @@
 
 追加した回帰テストは次を確認する。
 
-- `ConversionSessionTests.cs`：連続・交互呼び出しで状態を持ち越さず、返却済み結果を変えないこと。参照先が変わればref/outの照合結果も更新すること。
-- `CliConversionTests.cs`：通常実行とdry-run、レビューの有無について、終了コード、ログ、入力保持、成果物の有無を確認する。
+- `ConversionSessionTests.cs`：連続・交互呼び出しで状態を持ち越さず、返却済み結果を変えないこと。参照先が変わればref/outの照合結果も更新すること。VBプロジェクト参照とInteger.TryParseが混在しても中断せず、ソース定義のByRefをrefとして維持すること。
+- `CliConversionTests.cs`：通常実行とdry-run、レビューの有無について、終了コード、ログ、入力保持、成果物の有無を確認する。変換開始前の中断でもerror.logに例外・スタックを追記すること。
 - `LegacyProjectMaterializerTests.cs`：コピー成功、欠落ファイル、外部参照が混在する場合の記録順と、dry-runの出力予定を確認する。Content・参照DLL・Importの先行コピーを後続項目が参照するケースも、通常実行とdry-runで検証する。
 
 ## 9/14版との動作差の修正

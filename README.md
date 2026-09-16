@@ -12,6 +12,8 @@ dotnet run --project src/VbToCSharpFixer -- --folder C:\src\vb --output C:\out
 
 ログは `logs/conversion.log`、`logs/file-copy.log`、`logs/project-conversion.log`、`logs/manual-review.csv` と `summary.txt` です。`--dry-run` は変換ソース、プロジェクト、リソースを作成せず、予定内容をログだけに出力します。
 
+処理中の例外で中断した場合は、入力・出力先、例外の種類、スタックを`logs/error.log`へ追記します。通常ログは処理完了時の集計なので、中断時には未作成または前回実行の内容の場合があります。出力先へ書き込めない場合も、標準エラーには元の例外とログ保存失敗を表示します。
+
 旧形式プロジェクトでは次も補正します。
 
 - VB Project Type GUIDからC# Project Type GUID
@@ -47,5 +49,7 @@ VBの`Is`／`IsNot`による参照同一性比較は、演算子オーバーロ�
 `For Each`は列挙情報と要素変換をSemanticModelで確認し、内部用の反復変数を介して変換します。これにより、VB側の制御変数への再代入と、宣言済み変数に最後の要素が残る動作を維持します。参照型を対象とする`With`は対象式を一度だけ評価する一時変数へ展開し、入れ子、メソッド、プロパティ、Indexerに対応します。値型Withは読み取り専用の場合だけ変換します。
 
 ## 設計上の境界
+
+内部構成とレビュー時の確認点は[リファクタリング後のレビュー案内](REFACTORING.md)を参照してください。
 
 この実装は誤変換回避を優先します。主要な型・メソッド・プロパティ・式・宣言・条件分岐は変換しますが、イベント、LINQ query syntax、複雑な制御構文など未対応の VB 構文はレビュー対象です。`.sln/.vbproj` 入力では `MSBuildWorkspace` が ProjectReference、DLL/NuGet/Framework 参照、Imports、Define、RootNamespace 等をロードします。フォルダ/単一ファイル入力では .NET 8 の platform assemblies のみを参照します。

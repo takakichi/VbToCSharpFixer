@@ -5,6 +5,34 @@ namespace VbToCSharpFixer.Tests;
 [TestFixture]
 public sealed class CliConversionTests
 {
+    [Test]
+    public async Task Failure_before_conversion_writes_exception_log_and_preserves_previous_errors()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "VbToCSharpCliTests", Guid.NewGuid().ToString("N"));
+        var output = Path.Combine(root, "out");
+        Directory.CreateDirectory(Path.Combine(output, "logs"));
+        var errorLog = Path.Combine(output, "logs", "error.log");
+        await File.WriteAllTextAsync(errorLog, "Previous failure\n");
+        try
+        {
+            var input = Path.Combine(root, "missing.vb");
+            var exitCode = await Program.Main(["--file", input, "--output", output, "--skip-build"]);
+            var log = await File.ReadAllTextAsync(errorLog);
+            Assert.Multiple(() =>
+            {
+                Assert.That(exitCode, Is.EqualTo(1));
+                Assert.That(log, Does.StartWith("Previous failure\n"));
+                Assert.That(log, Does.Contain("System.IO.FileNotFoundException"));
+                Assert.That(log, Does.Contain(input));
+                Assert.That(log, Does.Contain("WorkspaceLoader.LoadAsync"));
+            });
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
     [TestCase(false, false)]
     [TestCase(true, false)]
     [TestCase(false, true)]

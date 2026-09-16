@@ -5,6 +5,25 @@ namespace VbToCSharpFixer;
 
 public static class ConversionLogger
 {
+    /// <summary>通常ログの集計に到達しない中断も、例外の種類とスタックを追記して残します。</summary>
+    internal static async Task WriteFailureAsync(Options options, Exception exception)
+    {
+        var path = Path.Combine(options.Output, "logs", "error.log");
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            var input = options.Solution ?? options.Project ?? options.Folder ?? options.File;
+            await File.AppendAllTextAsync(path,
+                $"[{DateTimeOffset.Now:O}] Conversion aborted\nInput: {input}\nOutput: {options.Output}\nDry run: {options.DryRun}\n{exception}\n\n");
+            Console.Error.WriteLine($"Error log: {path}");
+        }
+        catch (Exception logException)
+        {
+            // 出力先自体が書き込み不可でも、元の例外と終了コードをログ保存失敗で置き換えない。
+            Console.Error.WriteLine($"Could not write error log '{path}': {logException.Message}");
+        }
+    }
+
     /// <summary>変換、コピー、プロジェクト処理、レビュー項目および集計ログを出力します。</summary>
     public static async Task WriteAsync(string outputRoot, IReadOnlyList<FixResult> fixes,
         IReadOnlyList<ManualReviewItem> reviews, IReadOnlyList<string> workspaceDiagnostics,
