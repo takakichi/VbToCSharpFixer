@@ -157,13 +157,31 @@ internal sealed partial class ConversionSession
     /// <summary>VBプロパティとアクセサーブロックをC#として出力します。</summary>
     private void WriteProperty(PropertyBlockSyntax property, StringBuilder output)
     {
+        if (_model.GetDeclaredSymbol(property.PropertyStatement) is IPropertySymbol named && UsesPropertyMethods(named))
+        {
+            WritePropertyMethods(property.PropertyStatement, property.Accessors, named, output);
+            return;
+        }
         Line(output, PropertySignature(property.PropertyStatement));
         Block(output, () =>
         {
             foreach (var accessor in property.Accessors)
             {
-                Line(output, accessor.Kind() == VBSyntaxKind.GetAccessorBlock ? "get" : "set");
-                Block(output, () => { foreach (var s in accessor.Statements) WriteStatement(s, output); });
+                var symbol = _model.GetDeclaredSymbol(accessor.AccessorStatement) as IMethodSymbol;
+                var propertySymbol = _model.GetDeclaredSymbol(property.PropertyStatement) as IPropertySymbol;
+                var access = symbol is not null && propertySymbol is not null && symbol.DeclaredAccessibility != propertySymbol.DeclaredAccessibility
+                    ? AccessibilityText(symbol.DeclaredAccessibility) : "";
+                var isGet = accessor.Kind() == VBSyntaxKind.GetAccessorBlock;
+                Line(output, access + (isGet ? "get" : "set"));
+                var previousValue = _setterValue;
+                // VBのSet引数名は任意だが、C#では暗黙のvalueとなる。文字列置換ではなくシンボルで対応させる。
+                _setterValue = isGet ? null : symbol?.Parameters.LastOrDefault();
+                try
+                {
+                    WithLabelScope(accessor.Statements, () =>
+                        Block(output, () => { foreach (var s in accessor.Statements) WriteStatement(s, output); }));
+                }
+                finally { _setterValue = previousValue; }
             }
         });
     }
@@ -171,15 +189,27 @@ internal sealed partial class ConversionSession
     /// <summary>通常プロパティまたはIndexerのC#シグネチャを生成します。</summary>
     private string PropertySignature(PropertyStatementSyntax property)
     {
-        var access = Access(property.Modifiers);
         var symbol = _model.GetDeclaredSymbol(property) as IPropertySymbol;
+        // VBの省略時アクセスは宣言の種類で異なる。Propertyは構文上の修飾子だけでinternalにしない。
+        var access = symbol is null ? Access(property.Modifiers) : AccessibilityText(symbol.DeclaredAccessibility);
         var shared = symbol?.IsStatic == true || property.Modifiers.Any(VBSyntaxKind.SharedKeyword) ? "static " : "";
         var type = Type(property.AsClause?.Type());
         var parameters = property.ParameterList?.Parameters ?? default;
-        if (parameters.Count > 0)
+        if (symbol?.IsIndexer == true)
             return $"{access}{shared}{type} this[{string.Join(", ", parameters.Select(Parameter))}]".TrimStart();
-        return $"{access}{shared}{type} {property.Identifier.ValueText}".TrimStart();
+        return $"{access}{shared}{type} {EscapeIdentifier(property.Identifier.ValueText)}".TrimStart();
     }
+
+    private static string AccessibilityText(Accessibility access) => access switch
+    {
+        Accessibility.Public => "public ",
+        Accessibility.Private => "private ",
+        Accessibility.Protected => "protected ",
+        Accessibility.Internal => "internal ",
+        Accessibility.ProtectedOrInternal => "protected internal ",
+        Accessibility.ProtectedAndInternal => "private protected ",
+        _ => ""
+    };
 
     /// <summary>フィールドまたはローカル変数の宣言をC#として出力します。</summary>
     private void WriteDeclaration(string modifierText, SeparatedSyntaxList<VariableDeclaratorSyntax> declarators, StringBuilder output, bool field)

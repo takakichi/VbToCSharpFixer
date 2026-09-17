@@ -14,6 +14,8 @@ internal sealed partial class ConversionSession
     /// <summary>VB式を種類別にC#式へ変換します。</summary>
     private string Expr(ExpressionSyntax node, bool suppressImplicitCall = false)
     {
+        if (!suppressImplicitCall && _model.GetOperation(node) is Microsoft.CodeAnalysis.Operations.IPropertyReferenceOperation propertyReference && UsesPropertyMethods(propertyReference.Property))
+            return PropertyRead(propertyReference);
         string result = node switch
         {
             InvocationExpressionSyntax invocation => Invocation(invocation),
@@ -27,6 +29,8 @@ internal sealed partial class ConversionSession
             BinaryExpressionSyntax b => Binary(b),
             UnaryExpressionSyntax u => Unary(u),
             ArrayCreationExpressionSyntax a => ArrayCreation(a),
+            CollectionInitializerSyntax initializer => ArrayLiteral(initializer,
+                _model.GetTypeInfo(initializer).ConvertedType as IArrayTypeSymbol ?? _model.GetTypeInfo(initializer).Type as IArrayTypeSymbol),
             ObjectCreationExpressionSyntax o => ObjectCreation(o),
             PredefinedCastExpressionSyntax c => PredefinedCast(c),
             CTypeExpressionSyntax c => CType(c),
@@ -73,6 +77,10 @@ internal sealed partial class ConversionSession
                 after = $"{IndexerTarget(node.Expression, classification.Symbol as IPropertySymbol)}[{args}]";
                 fixType = FixType.Indexer;
                 break;
+            case ExpressionMeaning.Property:
+                after = Expr(node.Expression, true);
+                fixType = FixType.MethodCall;
+                break;
             default:
                 Review(node, classification.Meaning == ExpressionMeaning.Ambiguous ? ReasonCode.AmbiguousSymbol : ReasonCode.UnresolvedSymbol, classification.Reason);
                 return $"/* ManualReviewRequired */ {node}";
@@ -81,17 +89,18 @@ internal sealed partial class ConversionSession
         return after;
     }
 
-    /// <summary>Itemプロパティを除去してC#Indexerの対象式を生成します。</summary>
+    /// <summary>名前ではなくシンボルで既定プロパティを識別し、C#Indexerの対象式を生成します。</summary>
     private string IndexerTarget(ExpressionSyntax expression, IPropertySymbol? property)
     {
         if (expression is MemberAccessExpressionSyntax member &&
-            property is not null && string.Equals(member.Name.Identifier.ValueText, property.Name, StringComparison.OrdinalIgnoreCase) &&
-            string.Equals(property.Name, "Item", StringComparison.OrdinalIgnoreCase))
+            property is not null && SymbolEqualityComparer.Default.Equals(_model.GetSymbolInfo(member).Symbol, property))
         {
             if (HasOmittedWithReceiver(member))
                 return _withTargets.Count > 0 ? _withTargets.Peek() : UnsupportedExpression(member);
             return Expr(member.Expression, true);
         }
+        if (expression is IdentifierNameSyntax && property is not null &&
+            SymbolEqualityComparer.Default.Equals(_model.GetSymbolInfo(expression).Symbol, property)) return "this";
         return Expr(expression, true);
     }
 
@@ -129,6 +138,8 @@ internal sealed partial class ConversionSession
     /// <summary>識別子を変換し、暗黙の引数なしメソッド呼び出しを補正します。</summary>
     private string Identifier(IdentifierNameSyntax node, bool suppressImplicitCall)
     {
+        if (_setterValue is not null && SymbolEqualityComparer.Default.Equals(_model.GetSymbolInfo(node).Symbol, _setterValue))
+            return "value";
         var name = node.Identifier.ValueText switch { "Me" => "this", "MyBase" => "base", var x => EscapeIdentifier(x) };
         if (suppressImplicitCall) return name;
         var classification = _classifier.ClassifyExpression(node, _model);
@@ -359,6 +370,8 @@ internal sealed partial class ConversionSession
     /// <summary>Enumと整数型の間でC#に明示変換が必要な場合だけキャストを追加します。</summary>
     private string ExprForTarget(ExpressionSyntax expression, ITypeSymbol? targetType)
     {
+        if (expression is CollectionInitializerSyntax initializer && targetType is IArrayTypeSymbol array)
+            return ArrayLiteral(initializer, array);
         var value = Expr(expression);
         if (targetType is null) return value;
         var sourceType = _model.GetTypeInfo(expression).Type;
@@ -369,6 +382,19 @@ internal sealed partial class ConversionSession
             return $"({TypeName(targetType)})({value})";
         return value;
     }
+
+    /// <summary>NewのないVB配列初期化子も、代入先の要素型と次元数を持つ生成式にします。</summary>
+    private string ArrayLiteral(CollectionInitializerSyntax initializer, IArrayTypeSymbol? array)
+    {
+        if (array is null || CSharpTypeName(array) is not { } type) return UnsupportedExpression(initializer);
+        return $"new {type} {ArrayLiteralElements(initializer, array, 1)}";
+    }
+
+    private string ArrayLiteralElements(CollectionInitializerSyntax initializer, IArrayTypeSymbol array, int dimension) =>
+        "{ " + string.Join(", ", initializer.Initializers.Select(element =>
+            dimension < array.Rank && element is CollectionInitializerSyntax nested
+                ? ArrayLiteralElements(nested, array, dimension + 1)
+                : ExprForTarget(element, array.ElementType))) + " }";
 
     /// <summary>Enumメンバー参照が同じEnum宣言の初期化式内にあるか判定します。</summary>
     private bool IsInsideDeclaringEnum(SyntaxNode node, IFieldSymbol field)
@@ -422,7 +448,9 @@ internal sealed partial class ConversionSession
     private static string AssignmentOperator(VBSyntaxKind kind) => kind switch
     {
         VBSyntaxKind.AddAssignmentStatement => "+=", VBSyntaxKind.SubtractAssignmentStatement => "-=",
-        VBSyntaxKind.MultiplyAssignmentStatement => "*=", VBSyntaxKind.DivideAssignmentStatement => "/=", _ => "="
+        VBSyntaxKind.MultiplyAssignmentStatement => "*=", VBSyntaxKind.DivideAssignmentStatement => "/=",
+        VBSyntaxKind.ConcatenateAssignmentStatement => "+=", VBSyntaxKind.LeftShiftAssignmentStatement => "<<=",
+        VBSyntaxKind.RightShiftAssignmentStatement => ">>=", _ => "="
     };
 
     /// <summary>参照同一性を専用処理し、それ以外のVB二項式をC#演算子で出力します。</summary>

@@ -8,7 +8,7 @@
 
 - Event、Delegate、`Handles`、`WithEvents`
 - Object／Late Bindingまたは値型を書き換える`With`ブロック
-- Object／Late Binding／ユーザー定義変換を使用するFor／For Each、While、Do Loop
+- Object／Late Binding／ユーザー定義変換を使用するFor／For Each、Boolean以外の条件を持つWhile、Do Loop
 - ユーザー定義変換や安全性を確定できない比較を含む`Select Case`
 - `Exit Try`、`On Error`、`Resume`
 - LINQ query syntax

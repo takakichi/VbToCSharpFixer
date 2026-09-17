@@ -55,7 +55,7 @@ internal static class CSharpTypeNames
         }
         else
         {
-            var namespaceName = named.ContainingNamespace?.ToDisplayString();
+            var namespaceName = named.ContainingNamespace is { IsGlobalNamespace: false } ns ? ns.ToDisplayString() : "";
             prefix = string.IsNullOrEmpty(namespaceName) ? "" : "global::" + namespaceName + ".";
         }
         if (named.Arity == 0) return prefix + named.Name;

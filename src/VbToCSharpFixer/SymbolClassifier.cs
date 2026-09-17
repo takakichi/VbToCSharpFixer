@@ -50,11 +50,11 @@ public sealed class SymbolClassifier
             : new(ExpressionMeaning.Unresolved, null, model.GetTypeInfo(node).Type, "SemanticModel could not resolve expression");
     }
 
-    /// <summary>プロパティの引数とIndexer属性から通常プロパティかIndexerかを判定します。</summary>
+    /// <summary>Defaultの意味情報からIndexerを判定します。引数付きの通常プロパティとは区別します。</summary>
     private static SymbolClassification ClassifyProperty(IPropertySymbol property)
     {
-        var isIndexer = property.IsIndexer || property.Parameters.Length > 0;
+        var isIndexer = property.IsIndexer;
         return new(isIndexer ? ExpressionMeaning.Indexer : ExpressionMeaning.Property, property, property.Type,
-            isIndexer ? "Resolved as parameterized/default IPropertySymbol" : "Resolved as IPropertySymbol");
+            isIndexer ? "Resolved as default IPropertySymbol" : "Resolved as IPropertySymbol");
     }
 }

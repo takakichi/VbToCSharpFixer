@@ -44,12 +44,16 @@ var lines = "first" + Constants.vbCrLf + "second";
 
 VBの`Is`／`IsNot`による参照同一性比較は、演算子オーバーロードとC#言語バージョンの影響を避けるため、`object.ReferenceEquals(...)`へ変換します。VB文字列内の実タブは、生成C#でも実タブのまま維持します。
 
+Boolean条件の`While`、`Exit While`、`Continue While`と、通常のSubおよびコンストラクター内の`Exit Sub`に対応します。異種ループが入れ子になっている場合は、必要な箇所にラベルを生成し、指定された種類のループへ移動します。
+
+プロパティの公開範囲はSemanticModelで判定し、修飾子を省略したVBプロパティのPublicや、Private Setなどの制限を維持します。Setter引数はC#の`value`へ対応付けます。引数付きの既定プロパティはC#の`this[...]`インデクサーとして表現します。`Dim numbers As Integer() = {1, 2, 3}`のようなNewを省略した配列初期化にも対応します。
+
+`Default`ではない引数付きプロパティは、名前を保持した`Get_Name(...)`／`Set_Name(...)`メソッドと、その呼び出しへ変換します。`Shared`、アクセサーごとの公開範囲、省略可能引数を維持し、設定値はsetterメソッドの先頭引数として宣言します。代入の利用側には名前付き引数を使用し、複合代入では対象・添字・getter・右辺・setterの評価順序を維持します。既定プロパティの名前が`Item`以外でも、宣言と参照の両方をインデクサーへ変換します。
+
 通常の`Try`／`Catch`／`Finally`、複数Catch、`Catch When`をC#の例外処理へ変換します。組み込み数値型の`For`は開始値、終了値、Step値の評価回数を維持するため一時変数を生成し、正負どちらのStepにも対応します。`Exit For`と`Continue For`もそれぞれ`break`と`continue`へ変換します。Object型やユーザー定義変換など安全性を確定できないForは`ManualReviewRequired`に残します。
 
 `For Each`は列挙情報と要素変換をSemanticModelで確認し、内部用の反復変数を介して変換します。これにより、VB側の制御変数への再代入と、宣言済み変数に最後の要素が残る動作を維持します。参照型を対象とする`With`は対象式を一度だけ評価する一時変数へ展開し、入れ子、メソッド、プロパティ、Indexerに対応します。値型Withは読み取り専用の場合だけ変換します。
 
 ## 設計上の境界
-
-内部構成とレビュー時の確認点は[リファクタリング後のレビュー案内](REFACTORING.md)を参照してください。
 
 この実装は誤変換回避を優先します。主要な型・メソッド・プロパティ・式・宣言・条件分岐は変換しますが、イベント、LINQ query syntax、複雑な制御構文など未対応の VB 構文はレビュー対象です。`.sln/.vbproj` 入力では `MSBuildWorkspace` が ProjectReference、DLL/NuGet/Framework 参照、Imports、Define、RootNamespace 等をロードします。フォルダ/単一ファイル入力では .NET 8 の platform assemblies のみを参照します。

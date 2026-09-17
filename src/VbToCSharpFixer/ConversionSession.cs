@@ -20,6 +20,8 @@ internal sealed partial class ConversionSession
     private readonly Stack<string> _withTargets = new();
     private readonly Stack<string> _selectEndLabels = new();
     private readonly Stack<IReadOnlyDictionary<string, string>> _labelMaps = new();
+    private readonly Stack<LoopScope> _loops = new();
+    private IParameterSymbol? _setterValue;
     private bool _needsVisualBasicUsing;
     private readonly SemanticModel _model;
     private readonly string _project;
@@ -117,7 +119,10 @@ internal sealed partial class ConversionSession
                 WriteProperty(p, output);
                 break;
             case PropertyStatementSyntax p:
-                Line(output, PropertySignature(p) + " { get; set; }");
+                if (_model.GetDeclaredSymbol(p) is IPropertySymbol named && UsesPropertyMethods(named))
+                    WritePropertyMethods(p, default, named, output);
+                else
+                    Line(output, PropertySignature(p) + (_model.GetDeclaredSymbol(p) is IPropertySymbol { IsReadOnly: true } ? " { get; }" : " { get; set; }"));
                 break;
             case FieldDeclarationSyntax f:
                 WriteDeclaration(f.Modifiers.ToString(), f.Declarators, output, true);
@@ -126,6 +131,7 @@ internal sealed partial class ConversionSession
                 WriteDeclaration("", l.Declarators, output, false);
                 break;
             case AssignmentStatementSyntax a:
+                if (TryWritePropertyAssignment(a, output)) break;
                 Line(output, $"{Expr(a.Left)} {AssignmentOperator(a.Kind())} {ExprForTarget(a.Right, _model.GetTypeInfo(a.Left).Type)};");
                 break;
             case ExpressionStatementSyntax e:
@@ -148,10 +154,13 @@ internal sealed partial class ConversionSession
                 WriteUsingBlock(u, output);
                 break;
             case ForBlockSyntax f:
-                WriteForBlock(f, output);
+                WithLoopScope(VBSyntaxKind.ForKeyword, () => WriteForBlock(f, output), output);
                 break;
             case ForEachBlockSyntax f:
-                WriteForEachBlock(f, output);
+                WithLoopScope(VBSyntaxKind.ForKeyword, () => WriteForEachBlock(f, output), output);
+                break;
+            case WhileBlockSyntax w:
+                WithLoopScope(VBSyntaxKind.WhileKeyword, () => WriteWhileBlock(w, output), output);
                 break;
             case WithBlockSyntax w:
                 WriteWithBlock(w, output);
@@ -168,17 +177,17 @@ internal sealed partial class ConversionSession
             case GoToStatementSyntax g:
                 WriteGoTo(g, output);
                 break;
-            case ContinueStatementSyntax c when c.BlockKeyword.IsKind(VBSyntaxKind.ForKeyword):
-                Line(output, "continue;");
+            case ContinueStatementSyntax c when c.BlockKeyword.Kind() is VBSyntaxKind.ForKeyword or VBSyntaxKind.WhileKeyword:
+                WriteLoopTransfer(c, c.BlockKeyword.Kind(), true, output);
                 break;
-            case ExitStatementSyntax e when e.BlockKeyword.IsKind(VBSyntaxKind.ForKeyword):
-                Line(output, "break;");
+            case ExitStatementSyntax e when e.BlockKeyword.Kind() is VBSyntaxKind.ForKeyword or VBSyntaxKind.WhileKeyword:
+                WriteLoopTransfer(e, e.BlockKeyword.Kind(), false, output);
                 break;
             case ExitStatementSyntax e when e.BlockKeyword.IsKind(VBSyntaxKind.SelectKeyword) && _selectEndLabels.Count > 0:
                 Line(output, $"goto {_selectEndLabels.Peek()};");
                 break;
             case ExitStatementSyntax e when e.BlockKeyword.IsKind(VBSyntaxKind.SubKeyword) &&
-                                                 _model.GetEnclosingSymbol(e.SpanStart) is IMethodSymbol { MethodKind: MethodKind.Constructor }:
+                                                 _model.GetEnclosingSymbol(e.SpanStart) is IMethodSymbol { ReturnsVoid: true }:
                 Line(output, "return;");
                 break;
             case MultiLineIfBlockSyntax i:

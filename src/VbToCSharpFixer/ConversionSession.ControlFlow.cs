@@ -11,6 +11,65 @@ using static VbToCSharpFixer.CSharpTypeNames;
 
 internal sealed partial class ConversionSession
 {
+    private sealed class LoopScope(VBSyntaxKind kind, string exitLabel, string continueLabel)
+    {
+        internal VBSyntaxKind Kind { get; } = kind;
+        internal string ExitLabel { get; } = exitLabel;
+        internal string ContinueLabel { get; } = continueLabel;
+        internal bool NeedsExitLabel { get; set; }
+        internal bool NeedsContinueLabel { get; set; }
+    }
+
+    private void WithLoopScope(VBSyntaxKind kind, Action body, StringBuilder output)
+    {
+        var scope = new LoopScope(kind, CreateUniqueTemporaryName("__loopEnd"), CreateUniqueTemporaryName("__loopContinue"));
+        _loops.Push(scope);
+        try { body(); }
+        finally { _loops.Pop(); }
+        if (scope.NeedsExitLabel) Line(output, scope.ExitLabel + ": ;");
+    }
+
+    private void WriteLoopContinueLabel(StringBuilder output)
+    {
+        if (_loops.Peek().NeedsContinueLabel) Line(output, _loops.Peek().ContinueLabel + ": ;");
+    }
+
+    private void WriteLoopTransfer(StatementSyntax statement, VBSyntaxKind kind, bool continuation, StringBuilder output)
+    {
+        var target = _loops.FirstOrDefault(x => x.Kind == kind);
+        if (target is null)
+        {
+            Review(statement, ReasonCode.UnsupportedSyntax, "Loop transfer target could not be resolved");
+            Line(output, "// ManualReviewRequired: " + OneLine(statement.ToString()));
+            return;
+        }
+        // VBのExit/Continueはループの種類を指定する。異種ループをまたぐ場合はbreak/continueでは対象が変わる。
+        if (ReferenceEquals(target, _loops.Peek())) Line(output, continuation ? "continue;" : "break;");
+        else
+        {
+            if (continuation) target.NeedsContinueLabel = true;
+            else target.NeedsExitLabel = true;
+            Line(output, "goto " + (continuation ? target.ContinueLabel : target.ExitLabel) + ";");
+        }
+    }
+
+    private void WriteWhileBlock(WhileBlockSyntax block, StringBuilder output)
+    {
+        // 条件は毎回評価する。Objectの暗黙Boolean変換は推測しない。
+        if (_model.GetTypeInfo(block.WhileStatement.Condition).Type?.SpecialType != SpecialType.System_Boolean)
+        {
+            Review(block, ReasonCode.UnsupportedSyntax, "While requires a resolved Boolean condition");
+            Line(output, "// ManualReviewRequired: unsupported WhileBlock: " + OneLine(block.ToString()));
+            return;
+        }
+        Line(output, $"while ({Expr(block.WhileStatement.Condition)})");
+        Block(output, () =>
+        {
+            foreach (var statement in block.Statements) WriteStatement(statement, output);
+            WriteLoopContinueLabel(output);
+        });
+    }
+
     /// <summary>Usingの宣言または式を従来形式のC# usingブロックへ変換します。</summary>
     private void WriteUsingBlock(UsingBlockSyntax block, StringBuilder output)
     {
@@ -323,7 +382,7 @@ internal sealed partial class ConversionSession
         Line(output, $"{typeName} {limit} = {Expr(statement.ToValue)};");
         Line(output, $"{typeName} {step} = {(statement.StepClause is null ? "1" : Expr(statement.StepClause.StepValue))};");
         Line(output, $"for (; ({step} >= 0 ? {control} <= {limit} : {control} >= {limit}); {control} += {step})");
-        Block(output, () => { foreach (var child in block.Statements) WriteStatement(child, output); });
+        Block(output, () => { foreach (var child in block.Statements) WriteStatement(child, output); WriteLoopContinueLabel(output); });
         _writer.Indent--;
         Line(output, "}");
     }
@@ -351,6 +410,7 @@ internal sealed partial class ConversionSession
         {
             Line(output, declaration ? $"{typeName} {control} = {item};" : $"{control} = {item};");
             foreach (var child in block.Statements) WriteStatement(child, output);
+            WriteLoopContinueLabel(output);
         });
     }
 
