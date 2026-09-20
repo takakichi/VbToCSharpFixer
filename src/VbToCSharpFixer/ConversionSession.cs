@@ -66,7 +66,14 @@ internal sealed partial class ConversionSession
         foreach (var member in globalMembers) WriteStatement(member, body);
 
         var output = new StringBuilder();
-        var imports = root.Imports.SelectMany(x => x.ImportsClauses).Select(x => x.ToString()).ToList();
+        var imports = root.Imports.SelectMany(x => x.ImportsClauses).Select(x =>
+        {
+            // VBは型自体をImportsできる。C#の通常usingは名前空間用なのでusing staticへ変換する。
+            if (x is SimpleImportsClauseSyntax { Alias: null } clause &&
+                _model.GetSymbolInfo(clause.Name).Symbol is INamedTypeSymbol type && CSharpTypeName(type) is { } typeName)
+                return "static " + (typeName.StartsWith("global::", StringComparison.Ordinal) ? typeName : "global::" + typeName);
+            return x.ToString();
+        }).ToList();
         if (_needsVisualBasicUsing && !imports.Contains("Microsoft.VisualBasic", StringComparer.Ordinal))
             imports.Add("Microsoft.VisualBasic");
         foreach (var import in imports.Distinct(StringComparer.Ordinal))

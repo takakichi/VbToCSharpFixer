@@ -14,12 +14,18 @@ internal sealed partial class ConversionSession
     private void WriteType(TypeStatementSyntax type, SyntaxList<StatementSyntax> members, string keyword, StringBuilder output)
     {
         var access = Access(type.Modifiers);
+        var symbol = _model.GetDeclaredSymbol(type) as INamedTypeSymbol;
+        // VBは分割宣言の一方だけにPartialを指定できるが、C#では全てに必要。
+        var partial = type.Modifiers.Any(VBSyntaxKind.PartialKeyword) || symbol?.DeclaringSyntaxReferences.Length > 1
+            ? "partial " : "";
+        if (partial.Length > 0 && symbol is not null) access = AccessibilityText(symbol.DeclaredAccessibility);
+        var typeKeyword = keyword == "static class" ? $"static {partial}class" : partial + keyword;
         var inheritance = type.Parent switch
         {
             TypeBlockSyntax block when block.Inherits.Count > 0 => " : " + string.Join(", ", block.Inherits.SelectMany(x => x.Types).Select(Type)),
             _ => ""
         };
-        Line(output, $"{access}{keyword} {type.Identifier.ValueText}{inheritance}".TrimStart());
+        Line(output, $"{access}{typeKeyword} {type.Identifier.ValueText}{inheritance}".TrimStart());
         Block(output, () => { foreach (var m in members) WriteStatement(m, output); });
     }
 
@@ -233,6 +239,10 @@ internal sealed partial class ConversionSession
                 string init;
                 if (d.Initializer is not null)
                     init = " = " + ExprForTarget(d.Initializer.Value, targetType);
+                // As Newの生成式はInitializerではなくAsClauseにある。
+                // 複数変数の宣言でも、各変数に独立したインスタンスを生成する。
+                else if (d.AsClause is AsNewClauseSyntax asNew)
+                    init = " = " + ExprForTarget(asNew.NewExpression, targetType);
                 else if (targetType is IArrayTypeSymbol array && TryArrayBounds(name, array, out var allocation))
                     init = " = " + allocation;
                 else
@@ -293,8 +303,24 @@ internal sealed partial class ConversionSession
     private string Parameter(ParameterSyntax p)
     {
         var modifier = p.Modifiers.Any(VBSyntaxKind.ByRefKeyword) ? "ref " : "";
-        return $"{modifier}{Type(p.AsClause?.Type())} {p.Identifier.Identifier.ValueText}";
+        var symbol = _model.GetDeclaredSymbol(p) as IParameterSymbol;
+        // Optionalの既定値は通常メソッド・コンストラクター・プロパティで共通に保持する。
+        var defaultValue = p.Default is null ? "" : " = " +
+            (symbol is { HasExplicitDefaultValue: true } ? ParameterDefaultValue(symbol) : Expr(p.Default.Value));
+        return $"{modifier}{Type(p.AsClause?.Type())} {EscapeIdentifier(p.Identifier.Identifier.ValueText)}{defaultValue}";
     }
+
+    private static string ParameterDefaultValue(IParameterSymbol parameter)
+    {
+        var value = parameter.ExplicitDefaultValue;
+        if (value is null) return $"default({CSharpTypeName(parameter.Type)})";
+        var literal = ConstantLiteral(value);
+        return parameter.Type.TypeKind == TypeKind.Enum ? $"({CSharpTypeName(parameter.Type)}){literal}" : literal;
+    }
+
+    private static string ConstantLiteral(object value) =>
+        Microsoft.CodeAnalysis.CSharp.SymbolDisplay.FormatPrimitive(value, true, false) +
+        (value switch { decimal => "m", float => "f", double => "d", uint => "U", long => "L", ulong => "UL", _ => "" });
 
     /// <summary>VBアクセス修飾子からC#アクセス修飾子を生成します。</summary>
     private static string Access(SyntaxTokenList modifiers) =>

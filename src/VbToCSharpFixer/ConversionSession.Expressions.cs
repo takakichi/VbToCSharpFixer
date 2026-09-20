@@ -65,7 +65,10 @@ internal sealed partial class ConversionSession
                 }
                 else
                 {
-                    after = $"{Expr(node.Expression, true)}({args})";
+                    var target = node.Expression is IdentifierNameSyntax identifier && classification.Symbol is IMethodSymbol calledMethod
+                        ? StaticMethodTarget(identifier, calledMethod) ?? Expr(node.Expression, true)
+                        : Expr(node.Expression, true);
+                    after = $"{target}({args})";
                     fixType = FixType.MethodCall;
                 }
                 break;
@@ -124,7 +127,7 @@ internal sealed partial class ConversionSession
         var value = $"{receiver}.{memberName}";
         if (suppressImplicitCall) return value;
         var classification = _classifier.ClassifyExpression(node, _model);
-        if (classification.Symbol is IMethodSymbol { Parameters.Length: 0 } && classification.Meaning == ExpressionMeaning.Method)
+        if (classification.Symbol is IMethodSymbol optionalMethod && optionalMethod.Parameters.All(p => p.IsOptional) && classification.Meaning == ExpressionMeaning.Method)
         {
             var method = (IMethodSymbol)classification.Symbol;
             var isRuntime = IsVisualBasicRuntimeMethod(method);
@@ -141,6 +144,8 @@ internal sealed partial class ConversionSession
         if (_setterValue is not null && SymbolEqualityComparer.Default.Equals(_model.GetSymbolInfo(node).Symbol, _setterValue))
             return "value";
         var name = node.Identifier.ValueText switch { "Me" => "this", "MyBase" => "base", var x => EscapeIdentifier(x) };
+        if (_model.GetSymbolInfo(node).Symbol is IMethodSymbol staticMethod)
+            name = StaticMethodTarget(node, staticMethod) ?? name;
         if (suppressImplicitCall) return name;
         var classification = _classifier.ClassifyExpression(node, _model);
         var resolvedSymbol = classification.Symbol ?? _model.GetSymbolInfo(node).Symbol;
@@ -158,7 +163,7 @@ internal sealed partial class ConversionSession
             Record(node, FixType.VbRuntimeMember, after, classification);
             return after;
         }
-        if (classification.Symbol is IMethodSymbol { Parameters.Length: 0 })
+        if (classification.Symbol is IMethodSymbol optionalMethod && optionalMethod.Parameters.All(p => p.IsOptional))
         {
             var method = (IMethodSymbol)classification.Symbol;
             var isRuntime = IsVisualBasicRuntimeMethod(method);
@@ -169,12 +174,29 @@ internal sealed partial class ConversionSession
         return name;
     }
 
+    /// <summary>ImportsやModuleによって型名を省略したShared呼出しに宣言元の型名を補います。</summary>
+    private string? StaticMethodTarget(IdentifierNameSyntax node, IMethodSymbol method)
+    {
+        if (!method.IsStatic || IsVisualBasicRuntimeMethod(method)) return null;
+        var currentType = _model.GetEnclosingSymbol(node.SpanStart)?.ContainingType;
+        // 同じ型・基底型のメソッドはC#でも型名を省略できる。instance呼出しとは混同しない。
+        for (var scope = currentType; scope is not null; scope = scope.BaseType)
+            if (SymbolEqualityComparer.Default.Equals(scope, method.ContainingType)) return EscapeIdentifier(method.Name);
+        var type = CSharpTypeName(method.ContainingType);
+        if (type is null) return null;
+        if (!type.StartsWith("global::", StringComparison.Ordinal)) type = "global::" + type;
+        return type + "." + EscapeIdentifier(method.Name);
+    }
+
     /// <summary>VB引数リスト内の各式をC#へ変換して連結します。</summary>
     private string Arguments(ArgumentListSyntax? list, ImmutableArray<IParameterSymbol> parameters = default)
     {
         if (list is null) return "";
         return string.Join(", ", list.Arguments.Select((argument, index) =>
         {
+            // F(, value)の空欄はC#では使えないため、その位置の既定値を明示する。
+            if (argument is OmittedArgumentSyntax && !parameters.IsDefaultOrEmpty && index < parameters.Length &&
+                parameters[index].HasExplicitDefaultValue) return ParameterDefaultValue(parameters[index]);
             if (argument is not SimpleArgumentSyntax simple) return argument.ToString();
             IParameterSymbol? parameter = null;
             if (!parameters.IsDefaultOrEmpty)
@@ -412,6 +434,7 @@ internal sealed partial class ConversionSession
         VBSyntaxKind.FalseLiteralExpression => "false",
         VBSyntaxKind.StringLiteralExpression => StringLiteral((string)literal.Token.Value!),
         VBSyntaxKind.CharacterLiteralExpression => Microsoft.CodeAnalysis.CSharp.SymbolDisplay.FormatLiteral((char)literal.Token.Value!, true),
+        VBSyntaxKind.NumericLiteralExpression when literal.Token.Value is decimal or float => ConstantLiteral(literal.Token.Value),
         _ => literal.Token.ValueText
     };
 

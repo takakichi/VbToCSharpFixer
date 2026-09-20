@@ -33,8 +33,7 @@ internal sealed partial class ConversionSession
         {
             var method = getter ? property.GetMethod : property.SetMethod;
             if (method is null) continue;
-            var parameters = declaration.ParameterList!.Parameters.Select(p => Parameter(p) +
-                (p.Default is null ? "" : " = " + ExprForTarget(p.Default.Value, (_model.GetDeclaredSymbol(p) as IParameterSymbol)?.Type))).ToList();
+            var parameters = declaration.ParameterList!.Parameters.Select(Parameter).ToList();
             // 必須の設定値を先頭に置き、省略可能なプロパティ引数を合法なC#宣言に保つ。
             if (!getter) parameters.Insert(0, CSharpTypeName(property.Type) + " " + PropertyValueName(property));
             var modifiers = property.IsStatic ? "static " : property.IsAbstract ? "abstract " :
