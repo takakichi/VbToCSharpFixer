@@ -56,6 +56,8 @@ Boolean条件の`While`、`Exit While`、`Continue While`と、通常のSubお�
 
 ## 設計上の境界
 
+処理全体と1文書単位の変換手順は[処理フロー](PROCESS_FLOW.md)を参照してください。
+
 ファイル内のImportsとプロジェクト共通のImportsを生成C#へ引き継ぎます。別名が重複する場合はファイル内の設定を優先し、型名が衝突する参照はSemanticModelで確定した完全修飾名へ変換します。
 
 通常のString比較（`=`、`<>`、`<`、`<=`、`>`、`>=`）は`VBOperators.CompareString`へ変換し、ファイルまたはプロジェクトの`Option Compare`を維持します。Double／Single／Decimalのリテラルはそれぞれ`d`／`f`／`m`で型を維持し、異なる浮動小数点型への代入等には必要な明示変換を補います。IntegerからStringへの暗黙変換も初期化、代入、戻り値、通常の値引数、配列要素で補います。異なる型のByRef引数は従来どおりレビュー対象です。
