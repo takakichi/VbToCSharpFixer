@@ -56,4 +56,10 @@ Boolean条件の`While`、`Exit While`、`Continue While`と、通常のSubお�
 
 ## 設計上の境界
 
+ファイル内のImportsとプロジェクト共通のImportsを生成C#へ引き継ぎます。別名が重複する場合はファイル内の設定を優先し、型名が衝突する参照はSemanticModelで確定した完全修飾名へ変換します。
+
+通常のString比較（`=`、`<>`、`<`、`<=`、`>`、`>=`）は`VBOperators.CompareString`へ変換し、ファイルまたはプロジェクトの`Option Compare`を維持します。Double／Single／Decimalのリテラルはそれぞれ`d`／`f`／`m`で型を維持し、異なる浮動小数点型への代入等には必要な明示変換を補います。IntegerからStringへの暗黙変換も初期化、代入、戻り値、通常の値引数、配列要素で補います。異なる型のByRef引数は従来どおりレビュー対象です。
+
+関数名へ代入するFunctionには、名前衝突を避けた戻り値用変数を生成します。再代入、関数名による値の読み取り、末尾での返却、`Exit Function`に対応し、再帰呼び出しと区別します。関数名への代入がない通常のReturnだけの関数には変数を追加しません。
+
 この実装は誤変換回避を優先します。主要な型・メソッド・プロパティ・式・宣言・条件分岐は変換しますが、イベント、LINQ query syntax、複雑な制御構文など未対応の VB 構文はレビュー対象です。`.sln/.vbproj` 入力では `MSBuildWorkspace` が ProjectReference、DLL/NuGet/Framework 参照、Imports、Define、RootNamespace 等をロードします。フォルダ/単一ファイル入力では .NET 8 の platform assemblies のみを参照します。

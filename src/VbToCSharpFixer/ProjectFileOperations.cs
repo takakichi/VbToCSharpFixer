@@ -7,6 +7,17 @@ namespace VbToCSharpFixer;
 internal static class ProjectFileOperations
 {
     /// <summary>プロジェクト項目を安全な出力パスへコピーし、実際の出力先を返します。</summary>
+    /// <param name="project">処理対象のプロジェクト。</param>
+    /// <param name="projectDirectory">元プロジェクトのディレクトリ。</param>
+    /// <param name="layout">変換後ファイルの配置情報。</param>
+    /// <param name="include">プロジェクト項目のIncludeパス。</param>
+    /// <param name="itemType">MSBuild項目の種類。</param>
+    /// <param name="options">変換処理に使用するコマンドラインオプション。</param>
+    /// <param name="files">ファイル操作ログの格納先。</param>
+    /// <param name="reviews">出力する手動確認項目一覧。</param>
+    /// <param name="ct">処理のキャンセル要求を通知するトークン。</param>
+    /// <param name="link">プロジェクト項目のLinkパス。</param>
+    /// <returns>実際のコピー先と操作ログを含むタスク。</returns>
     internal static async Task<string?> CopyItemAsync(Project project, string projectDirectory, OutputLayout layout,
         string include, string itemType, Options options, List<FileCopyLogEntry> files,
         List<ManualReviewItem> reviews, CancellationToken ct, string? link = null)
@@ -42,6 +53,11 @@ internal static class ProjectFileOperations
     }
     
     /// <summary>全項目の処理とリソース親の検証を終えたXMLを保存します。</summary>
+    /// <param name="document">処理対象のドキュメント。</param>
+    /// <param name="destination">出力先のパス。</param>
+    /// <param name="dryRun">ファイルを書き込まず処理内容だけを確認する場合はtrue。</param>
+    /// <param name="ct">処理のキャンセル要求を通知するトークン。</param>
+    /// <returns>非同期処理の完了を表すタスク。</returns>
     internal static async Task SaveProjectAsync(XDocument document, string destination, bool dryRun, CancellationToken ct)
     {
         if (dryRun) return;

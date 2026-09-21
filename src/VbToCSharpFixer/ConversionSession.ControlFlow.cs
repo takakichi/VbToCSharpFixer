@@ -71,6 +71,8 @@ internal sealed partial class ConversionSession
     }
 
     /// <summary>Usingの宣言または式を従来形式のC# usingブロックへ変換します。</summary>
+    /// <param name="block">変換対象のVBブロック。</param>
+    /// <param name="output">生成したC#コードの出力先。</param>
     private void WriteUsingBlock(UsingBlockSyntax block, StringBuilder output)
     {
         if (!TryUsingResources(block.UsingStatement, out var resources) || resources.Count == 0)
@@ -101,6 +103,9 @@ internal sealed partial class ConversionSession
     }
 
     /// <summary>Using文の式または変数宣言を評価順序どおりのC#リソース指定へ変換します。</summary>
+    /// <param name="statement">変換または判定の対象となるVBステートメント。</param>
+    /// <param name="resources">変換対象のUsingリソース一覧。</param>
+    /// <returns>すべてのUsingリソースを安全に変換できた場合はtrue、それ以外はfalse。</returns>
     private bool TryUsingResources(UsingStatementSyntax statement, out IReadOnlyList<string> resources)
     {
         var converted = new List<string>();
@@ -138,6 +143,8 @@ internal sealed partial class ConversionSession
     }
 
     /// <summary>単行IfのThenおよびElseステートメントを通常のC#ブロックへ変換します。</summary>
+    /// <param name="statement">変換または判定の対象となるVBステートメント。</param>
+    /// <param name="output">生成したC#コードの出力先。</param>
     private void WriteSingleLineIf(SingleLineIfStatementSyntax statement, StringBuilder output)
     {
         Line(output, $"if ({Expr(statement.Condition)})");
@@ -148,6 +155,8 @@ internal sealed partial class ConversionSession
     }
 
     /// <summary>VBのSelect Caseを選択式の一度評価とif／else if連鎖へ変換します。</summary>
+    /// <param name="block">変換対象のVBブロック。</param>
+    /// <param name="output">生成したC#コードの出力先。</param>
     private void WriteSelectBlock(SelectBlockSyntax block, StringBuilder output)
     {
         var selectType = _model.GetTypeInfo(block.SelectStatement.Expression).Type;
@@ -202,6 +211,10 @@ internal sealed partial class ConversionSession
     }
 
     /// <summary>Select Caseの単一値、範囲、比較句をC#条件式へ変換します。</summary>
+    /// <param name="clause">処理対象のImports句またはCase句。</param>
+    /// <param name="valueName">Select対象値を保持する変数名。</param>
+    /// <param name="selectType">Select Case対象式の型。</param>
+    /// <returns>生成したCase条件式。安全に変換できない場合はnull。</returns>
     private string? SelectCaseCondition(CaseClauseSyntax clause, string valueName, ITypeSymbol? selectType)
     {
         return clause switch
@@ -217,10 +230,18 @@ internal sealed partial class ConversionSession
     }
 
     /// <summary>Select Caseの範囲比較を両端が安全な場合だけ結合します。</summary>
+    /// <param name="lower">範囲比較の下限条件。</param>
+    /// <param name="upper">範囲比較の上限条件。</param>
+    /// <returns>結合した範囲条件式。いずれかを変換できない場合はnull。</returns>
     private static string? CombineSelectRange(string? lower, string? upper) =>
         lower is null || upper is null ? null : $"{lower} && {upper}";
 
     /// <summary>Select Caseの比較を型に応じてC#演算子またはVB Operators呼び出しへ変換します。</summary>
+    /// <param name="left">比較の左辺コード。</param>
+    /// <param name="rightExpression">比較の右辺式。</param>
+    /// <param name="operation">生成する比較演算子。</param>
+    /// <param name="selectType">Select Case対象式の型。</param>
+    /// <returns>生成した比較式。安全に変換できない場合はnull。</returns>
     private string? SelectComparison(string left, ExpressionSyntax rightExpression, string? operation, ITypeSymbol? selectType)
     {
         if (operation is null || selectType is null) return null;
@@ -250,12 +271,16 @@ internal sealed partial class ConversionSession
     }
 
     /// <summary>VBのSelect Case比較演算子をC#演算子へ変換します。</summary>
+    /// <param name="operation">生成する比較演算子。</param>
+    /// <returns>対応するC#比較演算子。対応しない場合はnull。</returns>
     private static string? RelationalOperator(string operation) => operation switch
     {
         "=" => "==", "<>" => "!=", "<" => "<", "<=" => "<=", ">" => ">", ">=" => ">=", _ => null
     };
 
     /// <summary>Microsoft.VisualBasic.CompilerServices.Operatorsの比較メソッド参照を生成します。</summary>
+    /// <param name="method">処理対象のメソッド。</param>
+    /// <returns>VB Operatorsメソッドの参照表現。参照を解決できない場合はnull。</returns>
     private string? VisualBasicOperatorAccess(string method)
     {
         var operators = _model.Compilation.GetTypeByMetadataName("Microsoft.VisualBasic.CompilerServices.Operators");
@@ -264,6 +289,8 @@ internal sealed partial class ConversionSession
     }
 
     /// <summary>メソッド内LabelをC#で有効かつ衝突しない名前へ対応付けて本体を変換します。</summary>
+    /// <param name="statements">処理対象のステートメント一覧。</param>
+    /// <param name="body">出力する本体処理。</param>
     private void WithLabelScope(IEnumerable<StatementSyntax> statements, Action body)
     {
         var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -280,6 +307,7 @@ internal sealed partial class ConversionSession
     }
 
     /// <summary>現在のVBファイルまたはProject既定値がOption Compare Textか判定します。</summary>
+    /// <returns>条件を満たす場合はtrue、それ以外はfalse。</returns>
     private bool UsesTextComparison()
     {
         var root = (CompilationUnitSyntax)_model.SyntaxTree.GetRoot();
@@ -290,6 +318,8 @@ internal sealed partial class ConversionSession
     }
 
     /// <summary>VB Labelを現在のメソッド内対応表に基づくC# Labelとして出力します。</summary>
+    /// <param name="statement">変換または判定の対象となるVBステートメント。</param>
+    /// <param name="output">生成したC#コードの出力先。</param>
     private void WriteLabel(LabelStatementSyntax statement, StringBuilder output)
     {
         var source = statement.LabelToken.ValueText;
@@ -303,6 +333,8 @@ internal sealed partial class ConversionSession
     }
 
     /// <summary>通常のVB GoToを現在のメソッド内Labelへ変換します。</summary>
+    /// <param name="statement">変換または判定の対象となるVBステートメント。</param>
+    /// <param name="output">生成したC#コードの出力先。</param>
     private void WriteGoTo(GoToStatementSyntax statement, StringBuilder output)
     {
         var source = statement.Label.LabelToken.ValueText;
@@ -316,6 +348,8 @@ internal sealed partial class ConversionSession
     }
 
     /// <summary>VBのTry、Catch、Finallyブロックを同じ順序のC#例外処理へ変換します。</summary>
+    /// <param name="block">変換対象のVBブロック。</param>
+    /// <param name="output">生成したC#コードの出力先。</param>
     private void WriteTryBlock(TryBlockSyntax block, StringBuilder output)
     {
         Line(output, "try");
@@ -333,6 +367,8 @@ internal sealed partial class ConversionSession
     }
 
     /// <summary>VBのCatch宣言、例外型、Whenフィルターおよび本体をC#へ変換します。</summary>
+    /// <param name="block">変換対象のVBブロック。</param>
+    /// <param name="output">生成したC#コードの出力先。</param>
     private void WriteCatchBlock(CatchBlockSyntax block, StringBuilder output)
     {
         var statement = block.CatchStatement;
@@ -347,6 +383,8 @@ internal sealed partial class ConversionSession
     }
 
     /// <summary>Catch例外型をGlobal Importsに依存しないC#完全修飾名として返します。</summary>
+    /// <param name="clause">処理対象のImports句またはCase句。</param>
+    /// <returns>完全修飾されたCatch例外型名。</returns>
     private string CatchType(SimpleAsClauseSyntax clause)
     {
         var type = _model.GetTypeInfo(clause.Type).Type;
@@ -355,6 +393,8 @@ internal sealed partial class ConversionSession
     }
 
     /// <summary>安全に型付けされたVB数値Forを、上限とStepを一度だけ評価するC#ループへ変換します。</summary>
+    /// <param name="block">変換対象のVBブロック。</param>
+    /// <param name="output">生成したC#コードの出力先。</param>
     private void WriteForBlock(ForBlockSyntax block, StringBuilder output)
     {
         var statement = block.ForStatement;
@@ -388,6 +428,8 @@ internal sealed partial class ConversionSession
     }
 
     /// <summary>安全に解決できるVBのFor Eachを、制御変数の代入可能性を維持したC# foreachへ変換します。</summary>
+    /// <param name="block">変換対象のVBブロック。</param>
+    /// <param name="output">生成したC#コードの出力先。</param>
     private void WriteForEachBlock(ForEachBlockSyntax block, StringBuilder output)
     {
         var statement = block.ForEachStatement;
@@ -415,6 +457,11 @@ internal sealed partial class ConversionSession
     }
 
     /// <summary>For Each制御変数を宣言または既存の単純変数として意味解析します。</summary>
+    /// <param name="statement">変換または判定の対象となるVBステートメント。</param>
+    /// <param name="control">For制御変数の式。</param>
+    /// <param name="declaration">変換対象の宣言。</param>
+    /// <param name="controlType">For制御変数の型。</param>
+    /// <returns>For Each制御変数を解決できた場合はtrue、それ以外はfalse。</returns>
     private bool TryGetForEachControl(ForEachStatementSyntax statement, out string control,
         out bool declaration, out ITypeSymbol controlType)
     {
@@ -448,6 +495,9 @@ internal sealed partial class ConversionSession
     }
 
     /// <summary>For Eachの列挙型と要素変換がC# foreachでも安全に表現できるか判定します。</summary>
+    /// <param name="statement">変換または判定の対象となるVBステートメント。</param>
+    /// <param name="controlType">For Each制御変数の型。</param>
+    /// <returns>条件を満たす場合はtrue、それ以外はfalse。</returns>
     private bool CanSafelyEnumerate(ForEachStatementSyntax statement, ITypeSymbol controlType)
     {
         var collectionType = _model.GetTypeInfo(statement.Expression).Type;
@@ -462,6 +512,8 @@ internal sealed partial class ConversionSession
     }
 
     /// <summary>参照型または読み取り専用の値型を対象とするVB WithブロックをC#へ変換します。</summary>
+    /// <param name="block">変換対象のVBブロック。</param>
+    /// <param name="output">生成したC#コードの出力先。</param>
     private void WriteWithBlock(WithBlockSyntax block, StringBuilder output)
     {
         var targetExpression = block.WithStatement.Expression;
@@ -495,6 +547,8 @@ internal sealed partial class ConversionSession
     }
 
     /// <summary>値型Withの本体が代入や呼び出しを含まない読み取り専用か保守的に判定します。</summary>
+    /// <param name="block">変換対象のVBブロック。</param>
+    /// <returns>条件を満たす場合はtrue、それ以外はfalse。</returns>
     private static bool IsReadOnlyValueTypeWith(WithBlockSyntax block)
     {
         var nodes = block.Statements.SelectMany(x => x.DescendantNodesAndSelf())
@@ -509,14 +563,24 @@ internal sealed partial class ConversionSession
     }
 
     /// <summary>式が現在のWith対象を起点とする先頭ドットのメンバー参照か判定します。</summary>
+    /// <param name="expression">変換または判定の対象となるVB式。</param>
+    /// <returns>条件を満たす場合はtrue、それ以外はfalse。</returns>
     private static bool IsWithBasedExpression(ExpressionSyntax expression) =>
         expression.DescendantNodesAndSelf().OfType<MemberAccessExpressionSyntax>().Any(HasOmittedWithReceiver);
 
     /// <summary>VB With内で左辺が省略されたメンバーアクセスか判定します。</summary>
+    /// <param name="member">With対象を省略したメンバーアクセス。</param>
+    /// <returns>条件を満たす場合はtrue、それ以外はfalse。</returns>
     private static bool HasOmittedWithReceiver(MemberAccessExpressionSyntax member) =>
         member.Expression is null || member.Expression.IsMissing;
 
     /// <summary>For制御変数を宣言または既存の単純変数として解決し、C#数値型を返します。</summary>
+    /// <param name="statement">変換または判定の対象となるVBステートメント。</param>
+    /// <param name="control">For Each制御変数の式。</param>
+    /// <param name="declaration">変換対象の宣言。</param>
+    /// <param name="controlType">For Each制御変数の型。</param>
+    /// <param name="typeName">生成コードで使用する制御変数の型名。</param>
+    /// <returns>For制御変数を安全に解決できた場合はtrue、それ以外はfalse。</returns>
     private bool TryGetForControl(ForStatementSyntax statement, out string control, out bool declaration,
         out ITypeSymbol controlType, out string typeName)
     {
@@ -556,6 +620,9 @@ internal sealed partial class ConversionSession
     }
 
     /// <summary>For境界値が制御変数型へユーザー定義変換や縮小変換なしで代入可能か判定します。</summary>
+    /// <param name="expression">変換または判定の対象となるVB式。</param>
+    /// <param name="targetType">変換先として要求される型。</param>
+    /// <returns>条件を満たす場合はtrue、それ以外はfalse。</returns>
     private bool CanAssignForValue(ExpressionSyntax expression, ITypeSymbol targetType)
     {
         var conversion = _model.ClassifyConversion(expression, targetType);

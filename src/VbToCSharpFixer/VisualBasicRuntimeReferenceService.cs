@@ -6,6 +6,12 @@ namespace VbToCSharpFixer;
 public sealed class VisualBasicRuntimeReferenceService
 {
     /// <summary>VBランタイム呼び出しを含む旧形式C#プロジェクトへ必要なアセンブリ参照を追加します。</summary>
+    /// <param name="project">処理対象のプロジェクト。</param>
+    /// <param name="projectOutputDirectory">変換後プロジェクトの出力ディレクトリ。</param>
+    /// <param name="required">生成コードが参照するVBランタイム型一覧。</param>
+    /// <param name="dryRun">ファイルを書き込まず処理内容だけを確認する場合はtrue。</param>
+    /// <param name="cancellationToken">処理のキャンセル要求を通知するトークン。</param>
+    /// <returns>追加した参照のログ。変更が不要な場合はnull。</returns>
     public async Task<ProjectConversionLogEntry?> EnsureReferenceAsync(
         Project project, string projectOutputDirectory, bool required, bool dryRun,
         CancellationToken cancellationToken = default)

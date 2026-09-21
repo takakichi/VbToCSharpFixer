@@ -9,14 +9,20 @@ using static VbToCSharpFixer.CSharpTypeNames;
 internal sealed partial class ConversionSession
 {
     /// <summary>メソッドがMicrosoft.VisualBasicランタイム由来かをAssemblyとNamespaceから判定します。</summary>
+    /// <param name="method">処理対象のメソッド。</param>
+    /// <returns>条件を満たす場合はtrue、それ以外はfalse。</returns>
     private static bool IsVisualBasicRuntimeMethod(IMethodSymbol method) =>
         IsVisualBasicRuntimeSymbol(method);
 
     /// <summary>静的なMicrosoft.VisualBasicフィールドまたはプロパティか判定します。</summary>
+    /// <param name="symbol">処理対象のシンボル。</param>
+    /// <returns>条件を満たす場合はtrue、それ以外はfalse。</returns>
     private static bool IsVisualBasicRuntimeValueMember(ISymbol symbol) =>
         symbol.IsStatic && (symbol is IFieldSymbol || symbol is IPropertySymbol) && IsVisualBasicRuntimeSymbol(symbol);
 
     /// <summary>シンボルがMicrosoft.VisualBasicアセンブリと名前空間に属するか判定します。</summary>
+    /// <param name="symbol">処理対象のシンボル。</param>
+    /// <returns>条件を満たす場合はtrue、それ以外はfalse。</returns>
     private static bool IsVisualBasicRuntimeSymbol(ISymbol symbol) =>
         symbol.ContainingAssembly?.Identity.Name is { } assemblyName &&
         (assemblyName.Equals("Microsoft.VisualBasic", StringComparison.OrdinalIgnoreCase) ||
@@ -25,9 +31,13 @@ internal sealed partial class ConversionSession
          symbol.ContainingNamespace?.ToDisplayString().StartsWith("Microsoft.VisualBasic.", StringComparison.Ordinal) == true);
 
     /// <summary>VBランタイム型について通常名または衝突回避aliasによるC#アクセス表現を返します。</summary>
+    /// <param name="method">処理対象のメソッド。</param>
+    /// <returns>生成または変換した文字列。</returns>
     private string VisualBasicRuntimeTypeAccess(IMethodSymbol method) => VisualBasicRuntimeTypeAccess(method.ContainingType);
 
     /// <summary>VBランタイム型について通常名または衝突回避aliasによるC#アクセス表現を返します。</summary>
+    /// <param name="containingType">アクセス表現を生成するVBランタイム型。</param>
+    /// <returns>生成または変換した文字列。</returns>
     private string VisualBasicRuntimeTypeAccess(INamedTypeSymbol containingType)
     {
         // ソース全体の識別子を事前収集しているため、参照より後で宣言される同名型も検出できる。

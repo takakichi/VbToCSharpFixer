@@ -14,6 +14,16 @@ internal static class ProjectConverter
     };
 
     /// <summary>項目ごとに確認・コピー・記録を完了させ、最後に変換済みXMLを保存します。</summary>
+    /// <param name="options">変換処理に使用するコマンドラインオプション。</param>
+    /// <param name="layout">変換後ファイルの配置情報。</param>
+    /// <param name="project">処理対象のプロジェクト。</param>
+    /// <param name="projectOutputs">プロジェクトIDと変換先ディレクトリの対応表。</param>
+    /// <param name="sourceOutputs">文書IDと変換先ソースパスの対応表。</param>
+    /// <param name="files">ファイル操作ログの格納先。</param>
+    /// <param name="changes">プロジェクト変換ログの格納先。</param>
+    /// <param name="reviews">出力する手動確認項目一覧。</param>
+    /// <param name="ct">処理のキャンセル要求を通知するトークン。</param>
+    /// <returns>非同期処理の完了を表すタスク。</returns>
     internal static async Task ConvertAsync(Options options, OutputLayout layout, Project project,
         IReadOnlyDictionary<string, string> projectOutputs,
         Dictionary<DocumentId, string> sourceOutputs,
@@ -152,6 +162,14 @@ internal static class ProjectConverter
     }
 
     /// <summary>VB Compile項目をRoslyn Documentへ対応付け、Linkを考慮したC#出力先を登録します。</summary>
+    /// <param name="project">処理対象のプロジェクト。</param>
+    /// <param name="projectDirectory">元プロジェクトのディレクトリ。</param>
+    /// <param name="include">プロジェクト項目のIncludeパス。</param>
+    /// <param name="link">プロジェクト項目のLinkパス。</param>
+    /// <param name="destination">出力先のパス。</param>
+    /// <param name="sourceOutputs">文書IDと変換先ソースパスの対応表。</param>
+    /// <param name="plannedOutputs">重複確認に使用する変換予定パス一覧。</param>
+    /// <param name="reviews">出力する手動確認項目一覧。</param>
     private static void MapSourceDocument(Project project, string projectDirectory, string include, string? link,
         string destination, Dictionary<DocumentId, string> sourceOutputs,
         Dictionary<string, DocumentId> plannedOutputs, List<ManualReviewItem> reviews)
@@ -188,6 +206,12 @@ internal static class ProjectConverter
     }
 
     /// <summary>EmbeddedResourceのDependentUponが変換後Compile項目と同じ論理フォルダーで一致するか検証します。</summary>
+    /// <param name="project">処理対象のプロジェクト。</param>
+    /// <param name="sourceProject">変換元プロジェクトのパス。</param>
+    /// <param name="destinationProject">変換後プロジェクトのパス。</param>
+    /// <param name="root">処理対象のXMLルート要素。</param>
+    /// <param name="sourceOutputs">文書IDと変換先ソースパスの対応表。</param>
+    /// <param name="reviews">出力する手動確認項目一覧。</param>
     private static void ValidateResourceParents(Project project, string sourceProject, string destinationProject,
         XElement root, IReadOnlyDictionary<DocumentId, string> sourceOutputs, List<ManualReviewItem> reviews)
     {
@@ -212,6 +236,8 @@ internal static class ProjectConverter
     }
 
     /// <summary>Project XML内の相対パスを比較用の区切り文字へ正規化します。</summary>
+    /// <param name="value">処理対象の値。</param>
+    /// <returns>生成または変換した文字列。</returns>
     private static string NormalizeProjectPath(string value)
     {
         var normalized = value.Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar);
@@ -221,6 +247,15 @@ internal static class ProjectConverter
     }
 
     /// <summary>固定の相対パスを持つカスタムImportを、後続項目の確認より先にコピーします。</summary>
+    /// <param name="project">処理対象のプロジェクト。</param>
+    /// <param name="projectDirectory">元プロジェクトのディレクトリ。</param>
+    /// <param name="layout">変換後ファイルの配置情報。</param>
+    /// <param name="import">コピー対象のImport要素。</param>
+    /// <param name="options">変換処理に使用するコマンドラインオプション。</param>
+    /// <param name="files">ファイル操作ログの格納先。</param>
+    /// <param name="reviews">出力する手動確認項目一覧。</param>
+    /// <param name="ct">処理のキャンセル要求を通知するトークン。</param>
+    /// <returns>非同期処理の完了を表すタスク。</returns>
     private static async Task CopyImportIfLocalAsync(Project project, string projectDirectory, OutputLayout layout,
         string import, Options options, List<FileCopyLogEntry> files, List<ManualReviewItem> reviews, CancellationToken ct)
     {
@@ -229,9 +264,16 @@ internal static class ProjectConverter
     }
 
     /// <summary>MSBuild項目パスにワイルドカードが含まれるか判定します。</summary>
+    /// <param name="value">処理対象の値。</param>
+    /// <returns>条件を満たす場合はtrue、それ以外はfalse。</returns>
     private static bool ContainsWildcard(string value) => value.IndexOfAny(['*', '?']) >= 0;
 
     /// <summary>プロジェクト構成に関するManualReviewRequired項目を生成します。</summary>
+    /// <param name="project">処理対象のプロジェクト。</param>
+    /// <param name="path">処理対象のファイルパス。</param>
+    /// <param name="reason">手動確認が必要になった理由。</param>
+    /// <param name="details">ログに記録する詳細説明。</param>
+    /// <returns>生成した手動確認項目。</returns>
     private static ManualReviewItem Review(string project, string path, ReasonCode reason, string details) =>
         new(project, path, 0, 0, "", reason, details);
 

@@ -8,6 +8,8 @@ namespace VbToCSharpFixer;
 internal static class SyntaxExtensions
 {
     /// <summary>As句またはAs New句から宣言型のSyntaxを取得します。</summary>
+    /// <param name="clause">処理対象のImports句またはCase句。</param>
+    /// <returns>宣言から取得した型構文。存在しない場合はnull。</returns>
     public static TypeSyntax? Type(this AsClauseSyntax? clause) => clause switch
     {
         SimpleAsClauseSyntax simple => simple.Type,

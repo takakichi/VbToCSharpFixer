@@ -11,6 +11,10 @@ using static VbToCSharpFixer.CSharpTypeNames;
 internal sealed partial class ConversionSession
 {
     /// <summary>クラス、構造体、InterfaceまたはModuleの宣言とメンバーを出力します。</summary>
+    /// <param name="type">処理対象の型または型構文。</param>
+    /// <param name="members">出力する型メンバーの一覧。</param>
+    /// <param name="keyword">生成するC#型キーワード。</param>
+    /// <param name="output">生成したC#コードの出力先。</param>
     private void WriteType(TypeStatementSyntax type, SyntaxList<StatementSyntax> members, string keyword, StringBuilder output)
     {
         var access = Access(type.Modifiers);
@@ -30,6 +34,8 @@ internal sealed partial class ConversionSession
     }
 
     /// <summary>VBのEnum宣言、基底型、属性および各列挙値をC#として出力します。</summary>
+    /// <param name="block">変換対象のVBブロック。</param>
+    /// <param name="output">生成したC#コードの出力先。</param>
     private void WriteEnum(EnumBlockSyntax block, StringBuilder output)
     {
         var statement = block.EnumStatement;
@@ -56,6 +62,8 @@ internal sealed partial class ConversionSession
     }
 
     /// <summary>VB属性リストをC#属性として出力します。</summary>
+    /// <param name="lists">出力する属性リスト。</param>
+    /// <param name="output">生成したC#コードの出力先。</param>
     private void WriteAttributes(SyntaxList<AttributeListSyntax> lists, StringBuilder output)
     {
         foreach (var list in lists)
@@ -63,6 +71,8 @@ internal sealed partial class ConversionSession
     }
 
     /// <summary>VB属性の名前、位置引数および名前付き引数をC#表現へ変換します。</summary>
+    /// <param name="attribute">変換対象のVB属性。</param>
+    /// <returns>生成または変換した文字列。</returns>
     private string Attribute(AttributeSyntax attribute)
     {
         var symbol = _model.GetSymbolInfo(attribute).Symbol as IMethodSymbol;
@@ -87,18 +97,41 @@ internal sealed partial class ConversionSession
     }
 
     /// <summary>VBメソッドブロックをC#メソッドとして出力します。</summary>
+    /// <param name="method">処理対象のメソッド。</param>
+    /// <param name="output">生成したC#コードの出力先。</param>
     private void WriteMethod(MethodBlockSyntax method, StringBuilder output)
     {
+        var symbol = _model.GetDeclaredSymbol(method.SubOrFunctionStatement) as IMethodSymbol;
+        // VBではFunction名が暗黙の戻り値変数としても解決される。文字列で名前を比較すると
+        // 同名のメンバーや再帰呼び出しを誤判定するため、RoslynのIsFunctionValueで識別する。
+        _functionValue = method.DescendantNodes().OfType<AssignmentStatementSyntax>()
+            .Select(a => _model.GetSymbolInfo(a.Left).Symbol).OfType<ILocalSymbol>()
+            .FirstOrDefault(local => local.IsFunctionValue && SymbolEqualityComparer.Default.Equals(local.ContainingSymbol, symbol));
+        _functionValueName = _functionValue is null ? null : CreateUniqueTemporaryName("__returnValue");
+        // ReturnやExit FunctionはFinally実行後の戻り値更新を反映できるよう、共通の終了地点へ集約する。
+        _functionExitLabel = _functionValue is not null && method.DescendantNodes().Any(node =>
+            (node is ReturnStatementSyntax || node is ExitStatementSyntax exit && exit.BlockKeyword.IsKind(VBSyntaxKind.FunctionKeyword)) &&
+            SymbolEqualityComparer.Default.Equals(_model.GetEnclosingSymbol(node.SpanStart), symbol))
+            ? CreateUniqueTemporaryName("__functionEnd") : null;
         Line(output, MethodSignature(method.SubOrFunctionStatement) + TrailingComment(method.SubOrFunctionStatement));
         WithLabelScope(method.Statements, () =>
             Block(output, () =>
             {
+                if (_functionValueName is not null)
+                    Line(output, $"{CSharpTypeName(symbol!.ReturnType)} {_functionValueName} = default({CSharpTypeName(symbol.ReturnType)});");
                 foreach (var s in method.Statements) WriteStatement(s, output);
                 WriteLeadingComments(method.EndSubOrFunctionStatement, output);
+                if (_functionExitLabel is not null) Line(output, _functionExitLabel + ":;");
+                if (_functionValueName is not null) Line(output, $"return {_functionValueName};");
             }, TrailingComment(method.EndSubOrFunctionStatement)));
+        _functionValue = null;
+        _functionValueName = null;
+        _functionExitLabel = null;
     }
 
     /// <summary>VBのSub NewをinstanceまたはSharedのC#コンストラクターへ変換します。</summary>
+    /// <param name="constructor">変換対象のVBコンストラクター。</param>
+    /// <param name="output">生成したC#コードの出力先。</param>
     private void WriteConstructor(ConstructorBlockSyntax constructor, StringBuilder output)
     {
         var statement = constructor.SubNewStatement;
@@ -126,6 +159,9 @@ internal sealed partial class ConversionSession
     }
 
     /// <summary>コンストラクター先頭のMyBase.NewまたはMe.NewをC# initializerへ変換します。</summary>
+    /// <param name="statement">変換または判定の対象となるVBステートメント。</param>
+    /// <param name="initializer">変換対象の初期化子。</param>
+    /// <returns>初期化子を安全に変換できた場合はtrue、それ以外はfalse。</returns>
     private bool TryConstructorInitializer(StatementSyntax statement, out string initializer)
     {
         initializer = "";
@@ -150,6 +186,8 @@ internal sealed partial class ConversionSession
     }
 
     /// <summary>VBメソッド宣言からC#のメソッドシグネチャを生成します。</summary>
+    /// <param name="method">処理対象のメソッド。</param>
+    /// <returns>生成または変換した文字列。</returns>
     private string MethodSignature(MethodStatementSyntax method)
     {
         var access = Access(method.Modifiers);
@@ -161,6 +199,8 @@ internal sealed partial class ConversionSession
     }
 
     /// <summary>VBプロパティとアクセサーブロックをC#として出力します。</summary>
+    /// <param name="property">処理対象のプロパティ。</param>
+    /// <param name="output">生成したC#コードの出力先。</param>
     private void WriteProperty(PropertyBlockSyntax property, StringBuilder output)
     {
         if (_model.GetDeclaredSymbol(property.PropertyStatement) is IPropertySymbol named && UsesPropertyMethods(named))
@@ -193,6 +233,8 @@ internal sealed partial class ConversionSession
     }
 
     /// <summary>通常プロパティまたはIndexerのC#シグネチャを生成します。</summary>
+    /// <param name="property">処理対象のプロパティ。</param>
+    /// <returns>生成または変換した文字列。</returns>
     private string PropertySignature(PropertyStatementSyntax property)
     {
         var symbol = _model.GetDeclaredSymbol(property) as IPropertySymbol;
@@ -218,6 +260,10 @@ internal sealed partial class ConversionSession
     };
 
     /// <summary>フィールドまたはローカル変数の宣言をC#として出力します。</summary>
+    /// <param name="modifierText">VB宣言の修飾子文字列。</param>
+    /// <param name="declarators">変換対象の変数宣言子一覧。</param>
+    /// <param name="output">生成したC#コードの出力先。</param>
+    /// <param name="field">フィールド宣言として処理する場合はtrue。</param>
     private void WriteDeclaration(string modifierText, SeparatedSyntaxList<VariableDeclaratorSyntax> declarators, StringBuilder output, bool field)
     {
         foreach (var d in declarators)
@@ -253,6 +299,10 @@ internal sealed partial class ConversionSession
     }
 
     /// <summary>変数名側に指定されたVB配列上限をC#の配列長へ変換します。</summary>
+    /// <param name="name">処理対象の名前。</param>
+    /// <param name="array">変換先または解析対象の配列型。</param>
+    /// <param name="allocation">生成した配列生成式の出力先。</param>
+    /// <returns>配列上限を安全に変換できた場合はtrue、それ以外はfalse。</returns>
     private bool TryArrayBounds(ModifiedIdentifierSyntax name, IArrayTypeSymbol array, out string allocation)
     {
         allocation = "";
@@ -269,11 +319,15 @@ internal sealed partial class ConversionSession
     }
 
     /// <summary>VB型構文をC#の組み込み型、Genericまたは配列型表現へ変換します。</summary>
+    /// <param name="type">処理対象の型または型構文。</param>
+    /// <returns>生成または変換した文字列。</returns>
     private string Type(TypeSyntax? type)
     {
         if (type is not null)
         {
             var resolvedType = _model.GetTypeInfo(type).Type ?? _model.GetSymbolInfo(type).Symbol as ITypeSymbol;
+            if (resolvedType is INamedTypeSymbol named && NeedsQualifiedType(named, type.SpanStart))
+                return CSharpTypeName(named) ?? type.ToString();
             if (resolvedType is INamedTypeSymbol { TypeKind: TypeKind.Enum } enumType)
                 return EnumTypeName(enumType);
         }
@@ -300,6 +354,8 @@ internal sealed partial class ConversionSession
     }
 
     /// <summary>VBパラメーターをByRef指定を含むC#パラメーターへ変換します。</summary>
+    /// <param name="p">変換対象のVBパラメーター。</param>
+    /// <returns>生成または変換した文字列。</returns>
     private string Parameter(ParameterSyntax p)
     {
         var modifier = p.Modifiers.Any(VBSyntaxKind.ByRefKeyword) ? "ref " : "";
@@ -323,12 +379,16 @@ internal sealed partial class ConversionSession
         (value switch { decimal => "m", float => "f", double => "d", uint => "U", long => "L", ulong => "UL", _ => "" });
 
     /// <summary>VBアクセス修飾子からC#アクセス修飾子を生成します。</summary>
+    /// <param name="modifiers">VB宣言に指定された修飾子。</param>
+    /// <returns>生成または変換した文字列。</returns>
     private static string Access(SyntaxTokenList modifiers) =>
         modifiers.Any(VBSyntaxKind.PublicKeyword) ? "public " :
         modifiers.Any(VBSyntaxKind.ProtectedKeyword) ? "protected " :
         modifiers.Any(VBSyntaxKind.PrivateKeyword) ? "private " : "internal ";
 
     /// <summary>文字列化されたVB修飾子からフィールド用C#アクセス修飾子を生成します。</summary>
+    /// <param name="modifiers">VB宣言に指定された修飾子。</param>
+    /// <returns>生成または変換した文字列。</returns>
     private static string AccessText(string modifiers) =>
         modifiers.Contains("Public", StringComparison.OrdinalIgnoreCase) ? "public " :
         modifiers.Contains("Private", StringComparison.OrdinalIgnoreCase) ? "private " : "";

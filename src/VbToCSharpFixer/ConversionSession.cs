@@ -22,6 +22,9 @@ internal sealed partial class ConversionSession
     private readonly Stack<IReadOnlyDictionary<string, string>> _labelMaps = new();
     private readonly Stack<LoopScope> _loops = new();
     private IParameterSymbol? _setterValue;
+    private ILocalSymbol? _functionValue;
+    private string? _functionValueName;
+    private string? _functionExitLabel;
     private bool _needsVisualBasicUsing;
     private readonly SemanticModel _model;
     private readonly string _project;
@@ -32,6 +35,11 @@ internal sealed partial class ConversionSession
     private readonly ReferenceKindResolver _referenceKinds;
 
     // 変換ごとに生成するため、前のファイルのalias・ラベル・レビュー項目を持ち越さない。
+    /// <summary>1ファイル分の構文木、意味情報および変換状態を初期化します。</summary>
+    /// <param name="tree">変換対象のVB構文木。</param>
+    /// <param name="model">構文木に対応する意味モデル。</param>
+    /// <param name="projectName">ログに記録するプロジェクト名。</param>
+    /// <param name="referenceKinds">ByRefとoutの違いを復元する判定サービス。</param>
     internal ConversionSession(SyntaxTree tree, SemanticModel model, string projectName, ReferenceKindResolver referenceKinds)
     {
         _tree = tree;
@@ -48,10 +56,14 @@ internal sealed partial class ConversionSession
     private RefKind EffectiveRefKind(IParameterSymbol parameter) => _referenceKinds.Resolve(parameter, _model.Compilation);
 
     /// <summary>VB SyntaxTree全体を意味解析結果に基づいてC#ソースへ変換します。</summary>
+    /// <param name="rootNamespace">生成コードに適用するルート名前空間。</param>
+    /// <returns>生成コード、変換記録および手動確認項目を含む変換結果。</returns>
     internal ConversionResult Convert(string? rootNamespace)
     {
         var root = (CompilationUnitSyntax)_tree.GetRoot();
         var body = new StringBuilder();
+        // VBのRootNamespaceはGlobalで始まる名前空間には適用されないため、
+        // 通常メンバーとGlobalメンバーを分けてからそれぞれ出力する。
         var globalMembers = root.Members.Where(IsGlobalNamespace).ToArray();
         var rootedMembers = root.Members.Where(x => !IsGlobalNamespace(x)).ToArray();
         if (!string.IsNullOrWhiteSpace(rootNamespace) && rootedMembers.Length > 0)
@@ -65,15 +77,10 @@ internal sealed partial class ConversionSession
         }
         foreach (var member in globalMembers) WriteStatement(member, body);
 
+        // 本体変換中に必要なVBランタイム型と衝突回避aliasが確定する。
+        // そのためusing群は本体を変換した後に組み立て、最終結果では先頭へ配置する。
         var output = new StringBuilder();
-        var imports = root.Imports.SelectMany(x => x.ImportsClauses).Select(x =>
-        {
-            // VBは型自体をImportsできる。C#の通常usingは名前空間用なのでusing staticへ変換する。
-            if (x is SimpleImportsClauseSyntax { Alias: null } clause &&
-                _model.GetSymbolInfo(clause.Name).Symbol is INamedTypeSymbol type && CSharpTypeName(type) is { } typeName)
-                return "static " + (typeName.StartsWith("global::", StringComparison.Ordinal) ? typeName : "global::" + typeName);
-            return x.ToString();
-        }).ToList();
+        var imports = ImportClauses().Select(ImportText).ToList();
         if (_needsVisualBasicUsing && !imports.Contains("Microsoft.VisualBasic", StringComparer.Ordinal))
             imports.Add("Microsoft.VisualBasic");
         foreach (var import in imports.Distinct(StringComparer.Ordinal))
@@ -86,6 +93,8 @@ internal sealed partial class ConversionSession
     }
 
     /// <summary>VBステートメントの種類に応じたC#構文を出力します。</summary>
+    /// <param name="statement">変換または判定の対象となるVBステートメント。</param>
+    /// <param name="output">生成したC#コードの出力先。</param>
     private void WriteStatement(StatementSyntax statement, StringBuilder output)
     {
         WriteLeadingComments(statement, output);
@@ -149,6 +158,14 @@ internal sealed partial class ConversionSession
                 break;
             case ReturnStatementSyntax r:
                 var method = _model.GetEnclosingSymbol(r.SpanStart) as IMethodSymbol;
+                if (_functionValue is not null && SymbolEqualityComparer.Default.Equals(method, _functionValue.ContainingSymbol))
+                {
+                    // VBのReturnも関数戻り値変数を設定する。Finallyからの更新を返却前に反映する。
+                    if (r.Expression is not null)
+                        Line(output, $"{_functionValueName} = {ExprForTarget(r.Expression, method?.ReturnType)};");
+                    Line(output, $"goto {_functionExitLabel};");
+                    break;
+                }
                 Line(output, r.Expression is null ? "return;" : $"return {ExprForTarget(r.Expression, method?.ReturnType)};");
                 break;
             case ThrowStatementSyntax t:
@@ -197,6 +214,11 @@ internal sealed partial class ConversionSession
                                                  _model.GetEnclosingSymbol(e.SpanStart) is IMethodSymbol { ReturnsVoid: true }:
                 Line(output, "return;");
                 break;
+            case ExitStatementSyntax e when e.BlockKeyword.IsKind(VBSyntaxKind.FunctionKeyword) &&
+                _model.GetEnclosingSymbol(e.SpanStart) is IMethodSymbol { ReturnsVoid: false } exitMethod:
+                Line(output, _functionExitLabel is not null ? $"goto {_functionExitLabel};" :
+                    $"return default({CSharpTypeName(exitMethod.ReturnType)});");
+                break;
             case MultiLineIfBlockSyntax i:
                 Line(output, $"if ({Expr(i.IfStatement.Condition)})");
                 Block(output, () => { foreach (var x in i.Statements) WriteStatement(x, output); });
@@ -221,6 +243,8 @@ internal sealed partial class ConversionSession
     }
 
     /// <summary>ソース識別子および既に生成した名前と衝突しない一時変数名を作成します。</summary>
+    /// <param name="baseName">一時識別子の基になる名前。</param>
+    /// <returns>既存の識別子と衝突しない一時変数名。</returns>
     private string CreateUniqueTemporaryName(string baseName)
     {
         var candidate = baseName;
@@ -230,6 +254,8 @@ internal sealed partial class ConversionSession
     }
 
     /// <summary>VBのGlobal名前空間宣言でありRootNamespaceを適用しないメンバーか判定します。</summary>
+    /// <param name="statement">変換または判定の対象となるVBステートメント。</param>
+    /// <returns>条件を満たす場合はtrue、それ以外はfalse。</returns>
     private static bool IsGlobalNamespace(StatementSyntax statement) =>
         statement is NamespaceBlockSyntax block &&
         block.NamespaceStatement.Name.ToString().StartsWith("Global.", StringComparison.OrdinalIgnoreCase);

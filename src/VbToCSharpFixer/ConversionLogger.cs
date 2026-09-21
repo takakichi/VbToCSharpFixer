@@ -6,6 +6,9 @@ namespace VbToCSharpFixer;
 public static class ConversionLogger
 {
     /// <summary>通常ログの集計に到達しない中断も、例外の種類とスタックを追記して残します。</summary>
+    /// <param name="options">変換処理に使用するコマンドラインオプション。</param>
+    /// <param name="exception">記録する例外。</param>
+    /// <returns>非同期処理の完了を表すタスク。</returns>
     internal static async Task WriteFailureAsync(Options options, Exception exception)
     {
         var path = Path.Combine(options.Output, "logs", "error.log");
@@ -25,6 +28,16 @@ public static class ConversionLogger
     }
 
     /// <summary>変換、コピー、プロジェクト処理、レビュー項目および集計ログを出力します。</summary>
+    /// <param name="outputRoot">ログを出力するルートディレクトリ。</param>
+    /// <param name="fixes">出力する変換結果一覧。</param>
+    /// <param name="reviews">出力する手動確認項目一覧。</param>
+    /// <param name="workspaceDiagnostics">Workspace読み込み時の診断一覧。</param>
+    /// <param name="fileOperations">出力するファイル操作ログ一覧。</param>
+    /// <param name="projectOperations">出力するプロジェクト操作ログ一覧。</param>
+    /// <param name="files">出力するファイル操作ログ一覧。</param>
+    /// <param name="dryRun">ファイルを書き込まず処理内容だけを確認する場合はtrue。</param>
+    /// <param name="cancellationToken">処理のキャンセル要求を通知するトークン。</param>
+    /// <returns>非同期処理の完了を表すタスク。</returns>
     public static async Task WriteAsync(string outputRoot, IReadOnlyList<FixResult> fixes,
         IReadOnlyList<ManualReviewItem> reviews, IReadOnlyList<string> workspaceDiagnostics,
         IReadOnlyList<FileCopyLogEntry> fileOperations,
@@ -72,5 +85,7 @@ public static class ConversionLogger
     }
 
     /// <summary>CSVフィールドとして安全な引用形式へエスケープします。</summary>
+    /// <param name="value">処理対象の値。</param>
+    /// <returns>生成または変換した文字列。</returns>
     private static string Csv(string value) => $"\"{value.Replace("\"", "\"\"")}\"";
 }

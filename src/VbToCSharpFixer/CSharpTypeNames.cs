@@ -8,6 +8,8 @@ internal static class CSharpTypeNames
 {
     // 完全修飾名と最小修飾名は呼び出し側の用途が異なるため、表記を一律に置き換えない。
     /// <summary>Forで安全に扱う組み込み数値型をC#キーワードへ対応付けます。</summary>
+    /// <param name="type">処理対象の型または型構文。</param>
+    /// <returns>対応するC#数値型キーワード。対象外の型の場合はnull。</returns>
     internal static string? CSharpNumericType(ITypeSymbol type) => type.SpecialType switch
     {
         SpecialType.System_SByte => "sbyte",
@@ -25,6 +27,8 @@ internal static class CSharpTypeNames
     };
 
     /// <summary>Roslyn型シンボルをGlobal Importsに依存しないC#型名へ変換します。</summary>
+    /// <param name="type">処理対象の型または型構文。</param>
+    /// <returns>完全修飾されたC#型名。安全に表現できない場合はnull。</returns>
     internal static string? CSharpTypeName(ITypeSymbol type)
     {
         var keyword = type.SpecialType switch
@@ -67,6 +71,8 @@ internal static class CSharpTypeNames
     }
 
     /// <summary>C#コード中で使用するEnum型名を正式な大文字・小文字で返します。</summary>
+    /// <param name="type">処理対象の型または型構文。</param>
+    /// <returns>完全修飾されたC#列挙型名。</returns>
     internal static string EnumTypeName(INamedTypeSymbol type)
     {
         var names = new Stack<string>();
@@ -80,6 +86,8 @@ internal static class CSharpTypeNames
     }
 
     /// <summary>型シンボルをC#の組み込み型名または最小修飾型名へ変換します。</summary>
+    /// <param name="type">処理対象の型または型構文。</param>
+    /// <returns>C#の組み込み型名または最小修飾型名。</returns>
     internal static string TypeName(ITypeSymbol type) => type.SpecialType switch
     {
         SpecialType.System_SByte => "sbyte", SpecialType.System_Byte => "byte",
@@ -90,6 +98,8 @@ internal static class CSharpTypeNames
     };
 
     /// <summary>C#予約語と一致する識別子を@付き識別子へ変換します。</summary>
+    /// <param name="name">処理対象の名前。</param>
+    /// <returns>必要に応じて@を付加したC#識別子。</returns>
     internal static string EscapeIdentifier(string name) =>
         CSharpSyntaxFacts.GetKeywordKind(name) != Microsoft.CodeAnalysis.CSharp.SyntaxKind.None ||
         CSharpSyntaxFacts.GetContextualKeywordKind(name) != Microsoft.CodeAnalysis.CSharp.SyntaxKind.None

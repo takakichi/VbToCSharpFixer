@@ -9,6 +9,10 @@ public sealed class LegacyProjectMaterializer
     public const string CSharpProjectTypeGuid = "{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}";
 
     /// <summary>Solution、旧形式Projectおよび関連ファイルをC#出力構成として生成します。</summary>
+    /// <param name="options">変換処理に使用するコマンドラインオプション。</param>
+    /// <param name="projects">処理対象のプロジェクト一覧。</param>
+    /// <param name="cancellationToken">処理のキャンセル要求を通知するトークン。</param>
+    /// <returns>生成した配置情報と処理ログを含むタスク。</returns>
     public async Task<MaterializationResult> MaterializeAsync(
         Options options, IReadOnlyList<LoadedProject> projects, CancellationToken cancellationToken = default)
     {
@@ -41,6 +45,14 @@ public sealed class LegacyProjectMaterializer
     }
 
     /// <summary>Solution内のVBプロジェクトパスとProject Type GUIDをC#用に変換します。</summary>
+    /// <param name="options">変換処理に使用するコマンドラインオプション。</param>
+    /// <param name="layout">変換後ファイルの配置情報。</param>
+    /// <param name="projects">処理対象のプロジェクト一覧。</param>
+    /// <param name="files">ファイル操作ログの格納先。</param>
+    /// <param name="changes">プロジェクト変換ログの格納先。</param>
+    /// <param name="reviews">出力する手動確認項目一覧。</param>
+    /// <param name="ct">処理のキャンセル要求を通知するトークン。</param>
+    /// <returns>非同期処理の完了を表すタスク。</returns>
     private static async Task ConvertSolutionAsync(Options options, OutputLayout layout,
         IReadOnlyList<LoadedProject> projects, List<FileCopyLogEntry> files,
         List<ProjectConversionLogEntry> changes, List<ManualReviewItem> reviews, CancellationToken ct)
@@ -74,13 +86,22 @@ public sealed class LegacyProjectMaterializer
     }
 
     /// <summary>既存の呼び出し元との互換性を保つため、共通の配置規則へ委譲します。</summary>
+    /// <param name="value">処理対象の値。</param>
+    /// <returns>C#用に変換したプロジェクト相対パス。</returns>
     public static string MapProjectPath(string value) => ProjectPathMapper.Map(value);
 
     /// <summary>プロジェクト構成に関するManualReviewRequired項目を生成します。</summary>
+    /// <param name="project">処理対象のプロジェクト。</param>
+    /// <param name="path">処理対象のファイルパス。</param>
+    /// <param name="reason">手動確認が必要になった理由。</param>
+    /// <param name="details">ログに記録する詳細説明。</param>
+    /// <returns>生成した手動確認項目。</returns>
     private static ManualReviewItem Review(string project, string path, ReasonCode reason, string details) =>
         new(project, path, 0, 0, "", reason, details);
 
     /// <summary>元ファイルのBOMを考慮してテキストエンコーディングを検出します。</summary>
+    /// <param name="path">処理対象のファイルパス。</param>
+    /// <returns>検出したテキストエンコーディング。</returns>
     private static Encoding DetectEncoding(string path)
     {
         using var reader = new StreamReader(path, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);

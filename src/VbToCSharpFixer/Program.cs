@@ -3,6 +3,8 @@ namespace VbToCSharpFixer;
 public static class Program
 {
     /// <summary>入力の解析、変換、構成出力、検証およびログ生成を統括します。</summary>
+    /// <param name="args">コマンドライン引数。</param>
+    /// <returns>正常終了時は0、引数または変換処理に失敗した場合は1を含むタスク。</returns>
     public static async Task<int> Main(string[] args)
     {
         Options? options = null;

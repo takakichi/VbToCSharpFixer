@@ -38,7 +38,7 @@ End Class
         Assert.Multiple(() =>
         {
             Assert.That(result.CSharp, Does.Match(@"\btry\r?\n"));
-            Assert.That(result.CSharp, Does.Contain("catch (global::System.InvalidOperationException ex) when (ex.Message != \"\")"));
+            Assert.That(result.CSharp, Does.Contain("catch (global::System.InvalidOperationException ex) when ((VBOperators.CompareString(ex.Message, \"\", false) != 0))"));
             Assert.That(result.CSharp, Does.Contain("catch (global::System.Exception ex)"));
             Assert.That(result.CSharp, Does.Match(@"\bcatch\r?\n"));
             Assert.That(result.CSharp, Does.Contain("throw;"));

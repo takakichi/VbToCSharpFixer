@@ -11,6 +11,9 @@ internal sealed class ReferenceKindResolver
     private CSharpCompilation? _csharpReferenceCompilation;
 
     /// <summary>VBがRefへ正規化した参照先メタデータをC# Compilationで照合し、明示的なoutだけを復元します。</summary>
+    /// <param name="parameter">処理対象のパラメーター。</param>
+    /// <param name="compilation">意味解析に使用するコンパイル。</param>
+    /// <returns>C#側で使用する参照渡しの種類。</returns>
     internal RefKind Resolve(IParameterSymbol parameter, Compilation compilation)
     {
         if (parameter.RefKind != RefKind.Ref || parameter.ContainingSymbol is not IMethodSymbol method ||

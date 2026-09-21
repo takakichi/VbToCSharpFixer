@@ -12,6 +12,9 @@ using static VbToCSharpFixer.CSharpTypeNames;
 internal sealed partial class ConversionSession
 {
     /// <summary>VB式を種類別にC#式へ変換します。</summary>
+    /// <param name="node">変換または記録の対象となる構文ノード。</param>
+    /// <param name="suppressImplicitCall">暗黙の引数なし呼び出しを付加しない場合はtrue。</param>
+    /// <returns>生成または変換した文字列。</returns>
     private string Expr(ExpressionSyntax node, bool suppressImplicitCall = false)
     {
         if (!suppressImplicitCall && _model.GetOperation(node) is Microsoft.CodeAnalysis.Operations.IPropertyReferenceOperation propertyReference && UsesPropertyMethods(propertyReference.Property))
@@ -43,6 +46,8 @@ internal sealed partial class ConversionSession
     }
 
     /// <summary>呼び出し式をメソッド、配列またはIndexerとして意味的に変換します。</summary>
+    /// <param name="node">変換または記録の対象となる構文ノード。</param>
+    /// <returns>生成または変換した文字列。</returns>
     private string Invocation(InvocationExpressionSyntax node)
     {
         var classification = _classifier.ClassifyInvocation(node, _model);
@@ -93,6 +98,9 @@ internal sealed partial class ConversionSession
     }
 
     /// <summary>名前ではなくシンボルで既定プロパティを識別し、C#Indexerの対象式を生成します。</summary>
+    /// <param name="expression">変換または判定の対象となるVB式。</param>
+    /// <param name="property">処理対象のプロパティ。</param>
+    /// <returns>生成または変換した文字列。</returns>
     private string IndexerTarget(ExpressionSyntax expression, IPropertySymbol? property)
     {
         if (expression is MemberAccessExpressionSyntax member &&
@@ -108,6 +116,9 @@ internal sealed partial class ConversionSession
     }
 
     /// <summary>メンバーアクセスを変換し、引数なしメソッドには呼び出し括弧を追加します。</summary>
+    /// <param name="node">変換または記録の対象となる構文ノード。</param>
+    /// <param name="suppressImplicitCall">暗黙の引数なし呼び出しを付加しない場合はtrue。</param>
+    /// <returns>生成または変換した文字列。</returns>
     private string Member(MemberAccessExpressionSyntax node, bool suppressImplicitCall)
     {
         string receiver;
@@ -139,8 +150,16 @@ internal sealed partial class ConversionSession
     }
 
     /// <summary>識別子を変換し、暗黙の引数なしメソッド呼び出しを補正します。</summary>
+    /// <param name="node">変換または記録の対象となる構文ノード。</param>
+    /// <param name="suppressImplicitCall">暗黙の引数なし呼び出しを付加しない場合はtrue。</param>
+    /// <returns>生成または変換した文字列。</returns>
     private string Identifier(IdentifierNameSyntax node, bool suppressImplicitCall)
     {
+        var identifierSymbol = _model.GetSymbolInfo(node).Symbol;
+        if (_functionValue is not null && SymbolEqualityComparer.Default.Equals(identifierSymbol, _functionValue))
+            return _functionValueName!;
+        if (identifierSymbol is INamedTypeSymbol namedType && NeedsQualifiedType(namedType, node.SpanStart))
+            return CSharpTypeName(namedType) ?? node.Identifier.ValueText;
         if (_setterValue is not null && SymbolEqualityComparer.Default.Equals(_model.GetSymbolInfo(node).Symbol, _setterValue))
             return "value";
         var name = node.Identifier.ValueText switch { "Me" => "this", "MyBase" => "base", var x => EscapeIdentifier(x) };
@@ -175,6 +194,9 @@ internal sealed partial class ConversionSession
     }
 
     /// <summary>ImportsやModuleによって型名を省略したShared呼出しに宣言元の型名を補います。</summary>
+    /// <param name="node">変換または記録の対象となる構文ノード。</param>
+    /// <param name="method">処理対象のメソッド。</param>
+    /// <returns>生成または変換した文字列。</returns>
     private string? StaticMethodTarget(IdentifierNameSyntax node, IMethodSymbol method)
     {
         if (!method.IsStatic || IsVisualBasicRuntimeMethod(method)) return null;
@@ -189,6 +211,9 @@ internal sealed partial class ConversionSession
     }
 
     /// <summary>VB引数リスト内の各式をC#へ変換して連結します。</summary>
+    /// <param name="list">変換対象の引数リスト。</param>
+    /// <param name="parameters">呼び出し先のパラメーター一覧。</param>
+    /// <returns>生成または変換した文字列。</returns>
     private string Arguments(ArgumentListSyntax? list, ImmutableArray<IParameterSymbol> parameters = default)
     {
         if (list is null) return "";
@@ -225,6 +250,10 @@ internal sealed partial class ConversionSession
     }
 
     /// <summary>refまたはout引数が型変換やVB copy-backを伴わない書き換え可能な格納場所か判定します。</summary>
+    /// <param name="expression">変換または判定の対象となるVB式。</param>
+    /// <param name="parameter">処理対象のパラメーター。</param>
+    /// <param name="refKind">C#側で必要となる参照渡しの種類。</param>
+    /// <returns>条件を満たす場合はtrue、それ以外はfalse。</returns>
     private bool IsSafeByReferenceArgument(ExpressionSyntax expression, IParameterSymbol parameter, RefKind refKind)
     {
         // VBはPropertyや変換式にも一時変数を介したcopy-in/copy-backを許すが、C#のref/outは
@@ -248,6 +277,8 @@ internal sealed partial class ConversionSession
     }
 
     /// <summary>refへ渡すローカル変数がC#でも宣言時に明示初期化されることを確認します。</summary>
+    /// <param name="local">初期化状態を確認するローカル変数。</param>
+    /// <returns>条件を満たす場合はtrue、それ以外はfalse。</returns>
     private static bool HasExplicitLocalInitialization(ILocalSymbol local)
     {
         foreach (var reference in local.DeclaringSyntaxReferences)
@@ -262,6 +293,8 @@ internal sealed partial class ConversionSession
     }
 
     /// <summary>Object生成式のコンストラクター引数にも必要なEnum変換を適用します。</summary>
+    /// <param name="expression">変換または判定の対象となるVB式。</param>
+    /// <returns>生成または変換した文字列。</returns>
     private string ObjectCreation(ObjectCreationExpressionSyntax expression)
     {
         var constructor = _model.GetSymbolInfo(expression).Symbol as IMethodSymbol;
@@ -269,6 +302,8 @@ internal sealed partial class ConversionSession
     }
 
     /// <summary>VB配列生成式の要素型、Rank、上限値および初期化子をC#配列生成式へ変換します。</summary>
+    /// <param name="expression">変換または判定の対象となるVB式。</param>
+    /// <returns>生成または変換した文字列。</returns>
     private string ArrayCreation(ArrayCreationExpressionSyntax expression)
     {
         if (_model.GetTypeInfo(expression).Type is not IArrayTypeSymbol array ||
@@ -278,7 +313,7 @@ internal sealed partial class ConversionSession
         if (expression.Initializer is not null)
         {
             var rank = "[" + new string(',', array.Rank - 1) + "]";
-            return $"new {elementType}{rank} {CollectionInitializer(expression.Initializer)}";
+            return $"new {elementType}{rank} {ArrayLiteralElements(expression.Initializer, array, 1)}";
         }
 
         var bounds = expression.ArrayBounds?.Arguments.OfType<SimpleArgumentSyntax>().ToArray() ?? [];
@@ -291,11 +326,15 @@ internal sealed partial class ConversionSession
     }
 
     /// <summary>VB配列・コレクション初期化子を入れ子構造と要素式を保ってC#初期化子へ変換します。</summary>
+    /// <param name="initializer">変換対象の初期化子。</param>
+    /// <returns>生成または変換した文字列。</returns>
     private string CollectionInitializer(CollectionInitializerSyntax initializer) =>
         "{ " + string.Join(", ", initializer.Initializers.Select(x =>
             x is CollectionInitializerSyntax nested ? CollectionInitializer(nested) : Expr(x))) + " }";
 
     /// <summary>CTypeを意味解析し、VB組み込み型はConversions、参照型等は括弧付きC#キャストへ変換します。</summary>
+    /// <param name="expression">変換または判定の対象となるVB式。</param>
+    /// <returns>生成または変換した文字列。</returns>
     private string CType(CTypeExpressionSyntax expression)
     {
         var targetType = _model.GetTypeInfo(expression).Type ?? _model.GetTypeInfo(expression.Type).Type;
@@ -324,10 +363,15 @@ internal sealed partial class ConversionSession
     }
 
     /// <summary>DirectCast等のC#明示キャストを後続メンバーアクセスにも安全な括弧付き式で生成します。</summary>
+    /// <param name="expression">変換または判定の対象となるVB式。</param>
+    /// <param name="targetType">変換先として要求される型。</param>
+    /// <returns>生成または変換した文字列。</returns>
     private string ParenthesizedCast(ExpressionSyntax expression, TypeSyntax targetType) =>
         $"(({Type(targetType)})({Expr(expression)}))";
 
     /// <summary>変換先組み込み型に対応するMicrosoft.VisualBasic Conversionsメソッド名を返します。</summary>
+    /// <param name="targetType">変換先として要求される型。</param>
+    /// <returns>対応するConversionsメソッド名。対応しない型の場合はnull。</returns>
     private static string? VisualBasicConversionMethod(ITypeSymbol targetType) => targetType.SpecialType switch
     {
         SpecialType.System_Boolean => "ToBoolean", SpecialType.System_Byte => "ToByte",
@@ -342,6 +386,11 @@ internal sealed partial class ConversionSession
     };
 
     /// <summary>CTypeのVB互換変換をMicrosoft.VisualBasic.CompilerServices.Conversions呼び出しとして生成します。</summary>
+    /// <param name="origin">変換内容の記録元となる構文。</param>
+    /// <param name="expression">変換または判定の対象となるVB式。</param>
+    /// <param name="targetType">変換先として要求される型。</param>
+    /// <param name="method">処理対象のメソッド。</param>
+    /// <returns>生成または変換した文字列。</returns>
     private string VisualBasicConversion(CTypeExpressionSyntax origin, ExpressionSyntax expression,
         ITypeSymbol targetType, string method)
     {
@@ -360,6 +409,8 @@ internal sealed partial class ConversionSession
     }
 
     /// <summary>CIntやCStrなどのVB組み込み変換をConversionsクラス呼び出しへ変換します。</summary>
+    /// <param name="expression">変換または判定の対象となるVB式。</param>
+    /// <returns>生成または変換した文字列。</returns>
     private string PredefinedCast(PredefinedCastExpressionSyntax expression)
     {
         var method = expression.Keyword.ValueText.ToUpperInvariant() switch
@@ -389,7 +440,10 @@ internal sealed partial class ConversionSession
         return after;
     }
 
-    /// <summary>Enumと整数型の間でC#に明示変換が必要な場合だけキャストを追加します。</summary>
+    /// <summary>代入先の型を確認し、Enum、浮動小数点数、IntegerからStringの必要な変換だけを補います。</summary>
+    /// <param name="expression">変換または判定の対象となるVB式。</param>
+    /// <param name="targetType">変換先として要求される型。</param>
+    /// <returns>生成または変換した文字列。</returns>
     private string ExprForTarget(ExpressionSyntax expression, ITypeSymbol? targetType)
     {
         if (expression is CollectionInitializerSyntax initializer && targetType is IArrayTypeSymbol array)
@@ -398,6 +452,23 @@ internal sealed partial class ConversionSession
         if (targetType is null) return value;
         var sourceType = _model.GetTypeInfo(expression).Type;
         if (sourceType is null || SymbolEqualityComparer.Default.Equals(sourceType, targetType)) return value;
+        // Option Strict Offで許可されるInteger→Stringは、現在のカルチャなどを含むVBの
+        // 変換規則を保つため、実行時の値にはConversions.ToStringを使用する。
+        if (sourceType.SpecialType == SpecialType.System_Int32 && targetType.SpecialType == SpecialType.System_String)
+        {
+            var constant = _model.GetConstantValue(expression);
+            if (constant.HasValue && constant.Value is int number)
+                return StringLiteral(number.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            var conversions = _model.Compilation.GetTypeByMetadataName("Microsoft.VisualBasic.CompilerServices.Conversions");
+            if (conversions is not null) return $"{VisualBasicRuntimeTypeAccess(conversions)}.ToString({value})";
+            return UnsupportedExpression(expression);
+        }
+        // リテラルだけを書き換えると複合式の計算精度が変わるため、必要な場合は式全体を
+        // 代入先の浮動小数点型へ変換する。Single→DoubleだけはC#でも暗黙変換できる。
+        if (sourceType.SpecialType is SpecialType.System_Single or SpecialType.System_Double or SpecialType.System_Decimal &&
+            targetType.SpecialType is SpecialType.System_Single or SpecialType.System_Double or SpecialType.System_Decimal)
+            return sourceType.SpecialType == SpecialType.System_Single && targetType.SpecialType == SpecialType.System_Double
+                ? value : $"({CSharpTypeName(targetType)})({value})";
         if (targetType.TypeKind == TypeKind.Enum && IsIntegral(sourceType))
             return $"({EnumTypeName((INamedTypeSymbol)targetType)})({value})";
         if (sourceType.TypeKind == TypeKind.Enum && IsIntegral(targetType))
@@ -406,6 +477,9 @@ internal sealed partial class ConversionSession
     }
 
     /// <summary>NewのないVB配列初期化子も、代入先の要素型と次元数を持つ生成式にします。</summary>
+    /// <param name="initializer">変換対象の初期化子。</param>
+    /// <param name="array">変換先または解析対象の配列型。</param>
+    /// <returns>生成または変換した文字列。</returns>
     private string ArrayLiteral(CollectionInitializerSyntax initializer, IArrayTypeSymbol? array)
     {
         if (array is null || CSharpTypeName(array) is not { } type) return UnsupportedExpression(initializer);
@@ -419,6 +493,9 @@ internal sealed partial class ConversionSession
                 : ExprForTarget(element, array.ElementType))) + " }";
 
     /// <summary>Enumメンバー参照が同じEnum宣言の初期化式内にあるか判定します。</summary>
+    /// <param name="node">変換または記録の対象となる構文ノード。</param>
+    /// <param name="field">フィールド宣言として処理する場合はtrue。</param>
+    /// <returns>条件を満たす場合はtrue、それ以外はfalse。</returns>
     private bool IsInsideDeclaringEnum(SyntaxNode node, IFieldSymbol field)
     {
         var block = node.Ancestors().OfType<EnumBlockSyntax>().FirstOrDefault();
@@ -427,6 +504,8 @@ internal sealed partial class ConversionSession
     }
 
     /// <summary>VBリテラルを対応するC#リテラル表現へ変換します。</summary>
+    /// <param name="literal">変換対象のVBリテラル。</param>
+    /// <returns>生成または変換した文字列。</returns>
     private static string Literal(LiteralExpressionSyntax literal) => literal.Kind() switch
     {
         VBSyntaxKind.NothingLiteralExpression => "null",
@@ -434,11 +513,13 @@ internal sealed partial class ConversionSession
         VBSyntaxKind.FalseLiteralExpression => "false",
         VBSyntaxKind.StringLiteralExpression => StringLiteral((string)literal.Token.Value!),
         VBSyntaxKind.CharacterLiteralExpression => Microsoft.CodeAnalysis.CSharp.SymbolDisplay.FormatLiteral((char)literal.Token.Value!, true),
-        VBSyntaxKind.NumericLiteralExpression when literal.Token.Value is decimal or float => ConstantLiteral(literal.Token.Value),
+        VBSyntaxKind.NumericLiteralExpression when literal.Token.Value is decimal or float or double => ConstantLiteral(literal.Token.Value),
         _ => literal.Token.ValueText
     };
 
     /// <summary>実タブを維持しつつC#として安全な文字列リテラルを生成します。</summary>
+    /// <param name="value">処理対象の値。</param>
+    /// <returns>生成または変換した文字列。</returns>
     private static string StringLiteral(string value)
     {
         var output = new StringBuilder(value.Length + 2).Append('"');
@@ -468,6 +549,8 @@ internal sealed partial class ConversionSession
     }
 
     /// <summary>VB代入ステートメント種別をC#代入演算子へ対応付けます。</summary>
+    /// <param name="kind">処理対象の構文またはループの種類。</param>
+    /// <returns>生成または変換した文字列。</returns>
     private static string AssignmentOperator(VBSyntaxKind kind) => kind switch
     {
         VBSyntaxKind.AddAssignmentStatement => "+=", VBSyntaxKind.SubtractAssignmentStatement => "-=",
@@ -477,6 +560,8 @@ internal sealed partial class ConversionSession
     };
 
     /// <summary>参照同一性を専用処理し、それ以外のVB二項式をC#演算子で出力します。</summary>
+    /// <param name="expression">変換または判定の対象となるVB式。</param>
+    /// <returns>生成または変換した文字列。</returns>
     private string Binary(BinaryExpressionSyntax expression)
     {
         if (expression.IsKind(VBSyntaxKind.IsExpression) || expression.IsKind(VBSyntaxKind.IsNotExpression))
@@ -486,6 +571,19 @@ internal sealed partial class ConversionSession
         }
         var leftType = _model.GetTypeInfo(expression.Left).Type;
         var rightType = _model.GetTypeInfo(expression.Right).Type;
+        // C#のstringには大小比較演算子がなく、==もVBのOption CompareやNothingの扱いを
+        // 再現しない。文字列同士の比較はVBランタイムへまとめて委譲する。
+        if (expression.Kind() is VBSyntaxKind.EqualsExpression or VBSyntaxKind.NotEqualsExpression or
+            VBSyntaxKind.LessThanExpression or VBSyntaxKind.LessThanOrEqualExpression or
+            VBSyntaxKind.GreaterThanExpression or VBSyntaxKind.GreaterThanOrEqualExpression &&
+            (leftType?.SpecialType == SpecialType.System_String || expression.Left.IsKind(VBSyntaxKind.NothingLiteralExpression)) &&
+            (rightType?.SpecialType == SpecialType.System_String || expression.Right.IsKind(VBSyntaxKind.NothingLiteralExpression)) &&
+            (leftType?.SpecialType == SpecialType.System_String || rightType?.SpecialType == SpecialType.System_String))
+        {
+            var compare = VisualBasicOperatorAccess("CompareString");
+            if (compare is null) return UnsupportedExpression(expression);
+            return $"({compare}({Expr(expression.Left)}, {Expr(expression.Right)}, {UsesTextComparison().ToString().ToLowerInvariant()}) {BinaryOperator(expression.Kind())} 0)";
+        }
         var left = rightType?.TypeKind == TypeKind.Enum && leftType is not null && IsIntegral(leftType)
             ? ExprForTarget(expression.Left, rightType) : Expr(expression.Left);
         var right = leftType?.TypeKind == TypeKind.Enum && rightType is not null && IsIntegral(rightType)
@@ -494,6 +592,8 @@ internal sealed partial class ConversionSession
     }
 
     /// <summary>VB二項演算子を対応するC#演算子へ変換します。</summary>
+    /// <param name="kind">処理対象の構文またはループの種類。</param>
+    /// <returns>生成または変換した文字列。</returns>
     private static string BinaryOperator(VBSyntaxKind kind) => kind switch
     {
         VBSyntaxKind.EqualsExpression => "==", VBSyntaxKind.NotEqualsExpression => "!=",
@@ -512,12 +612,16 @@ internal sealed partial class ConversionSession
     };
 
     /// <summary>VB単項演算子を対応するC#演算子へ変換します。</summary>
+    /// <param name="kind">処理対象の構文またはループの種類。</param>
+    /// <returns>生成または変換した文字列。</returns>
     private static string UnaryOperator(VBSyntaxKind kind) => kind switch
     {
         VBSyntaxKind.NotExpression => "!", VBSyntaxKind.UnaryMinusExpression => "-", _ => "+"
     };
 
     /// <summary>NotをBooleanの論理否定またはEnum・整数のビット反転として意味的に変換します。</summary>
+    /// <param name="expression">変換または判定の対象となるVB式。</param>
+    /// <returns>生成または変換した文字列。</returns>
     private string Unary(UnaryExpressionSyntax expression)
     {
         var operation = UnaryOperator(expression.Kind());
@@ -530,6 +634,8 @@ internal sealed partial class ConversionSession
     }
 
     /// <summary>列挙型を含む整数型か判定します。</summary>
+    /// <param name="type">処理対象の型または型構文。</param>
+    /// <returns>条件を満たす場合はtrue、それ以外はfalse。</returns>
     private static bool IsIntegral(ITypeSymbol type) => type.SpecialType is
         SpecialType.System_SByte or SpecialType.System_Byte or
         SpecialType.System_Int16 or SpecialType.System_UInt16 or

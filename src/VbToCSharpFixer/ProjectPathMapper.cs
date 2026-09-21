@@ -4,6 +4,8 @@ namespace VbToCSharpFixer;
 internal static class ProjectPathMapper
 {
     /// <summary>VBのMy Project配下にある標準ファイルをC#のProperties構成へ割り当てます。</summary>
+    /// <param name="value">処理対象の値。</param>
+    /// <returns>生成または変換した文字列。</returns>
     internal static string Map(string value)
     {
         // My Project全体を移動せず、C#の標準配置に対応するResources、Settings、manifestだけを移す。

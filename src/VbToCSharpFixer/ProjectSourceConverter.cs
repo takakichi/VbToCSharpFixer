@@ -9,6 +9,15 @@ internal sealed class ProjectSourceConverter
     private readonly ValidationService _validation = new();
     private readonly VisualBasicRuntimeReferenceService _runtimeReferences = new();
 
+    /// <summary>プロジェクト内のVB文書を変換し、生成コードをプロジェクト単位で検証します。</summary>
+    /// <param name="loaded">読み込み済みのVBプロジェクト。</param>
+    /// <param name="options">変換処理に使用するコマンドラインオプション。</param>
+    /// <param name="layout">変換後ファイルの配置情報。</param>
+    /// <param name="materialization">変換後のプロジェクト配置情報。</param>
+    /// <param name="fixes">変換記録の格納先。</param>
+    /// <param name="reviews">手動確認項目の格納先。</param>
+    /// <param name="projectOperations">プロジェクト操作ログの格納先。</param>
+    /// <returns>変換対象になった文書数を含むタスク。</returns>
     internal async Task<int> ConvertAsync(LoadedProject loaded, Options options, OutputLayout layout,
         MaterializationResult materialization, List<FixResult> fixes, List<ManualReviewItem> reviews,
         List<ProjectConversionLogEntry> projectOperations)
@@ -18,6 +27,8 @@ internal sealed class ProjectSourceConverter
         var visualBasicRuntimeTypes = new HashSet<string>(StringComparer.Ordinal);
         var compilationErrors = loaded.Compilation.GetDiagnostics()
             .Where(d => d.Severity == DiagnosticSeverity.Error).ToArray();
+        // まず全ファイルを変換して収集し、その後にまとめてC# Compilationを作る。
+        // ファイル単位の検証だけでは見つからない型参照やメンバー間の不整合もこれで検出できる。
         foreach (var document in loaded.Project.Documents.Where(d => !IsGeneratedBuildDocument(loaded.Project, d)))
         {
             var converted = await ConvertDocumentAsync(loaded, document, options, layout, materialization, compilationErrors, reviews);
@@ -46,6 +57,14 @@ internal sealed class ProjectSourceConverter
     }
 
     /// <summary>文書を変換し、元VBと生成C#の診断を記録します。</summary>
+    /// <param name="loaded">読み込み済みのVBプロジェクト。</param>
+    /// <param name="document">処理対象のドキュメント。</param>
+    /// <param name="options">変換処理に使用するコマンドラインオプション。</param>
+    /// <param name="layout">変換後ファイルの配置情報。</param>
+    /// <param name="materialization">変換後のプロジェクト配置情報。</param>
+    /// <param name="compilationErrors">元VBプロジェクトのコンパイルエラー一覧。</param>
+    /// <param name="reviews">出力する手動確認項目一覧。</param>
+    /// <returns>変換した文書。変換対象外の場合はnull。</returns>
     private async Task<ConvertedDocument?> ConvertDocumentAsync(LoadedProject loaded, Document document,
         Options options, OutputLayout layout, MaterializationResult materialization,
         IReadOnlyList<Diagnostic> compilationErrors, List<ManualReviewItem> reviews)
@@ -88,6 +107,9 @@ internal sealed class ProjectSourceConverter
     private sealed record ConvertedDocument(string Destination, ConversionResult Result);
 
     /// <summary>MSBuildがobj配下へ生成したドキュメントを出力対象から除外します。</summary>
+    /// <param name="project">処理対象のプロジェクト。</param>
+    /// <param name="document">処理対象のドキュメント。</param>
+    /// <returns>条件を満たす場合はtrue、それ以外はfalse。</returns>
     private static bool IsGeneratedBuildDocument(Project project, Document document)
     {
         if (document.FilePath is null || project.FilePath is null) return false;

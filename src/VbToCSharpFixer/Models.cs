@@ -51,6 +51,8 @@ public sealed record Options(
     string Output, bool DryRun, bool Verbose, bool SkipBuild = false)
 {
     /// <summary>コマンドライン引数を検証して実行オプションへ変換します。</summary>
+    /// <param name="args">コマンドライン引数。</param>
+    /// <returns>検証済みのコマンドラインオプション。</returns>
     public static Options Parse(string[] args)
     {
         string? solution = null, project = null, folder = null, file = null, output = null;
@@ -80,6 +82,9 @@ public sealed record Options(
     }
 
     /// <summary>値を必要とするオプションの次の引数を絶対パスとして取得します。</summary>
+    /// <param name="args">コマンドライン引数。</param>
+    /// <param name="i">値を取得する現在の引数位置。取得後は次の位置へ進みます。</param>
+    /// <returns>絶対パスへ変換した次の引数値。</returns>
     private static string Next(string[] args, ref int i) =>
         ++i < args.Length ? Path.GetFullPath(args[i]) : throw new ArgumentException(Usage);
 

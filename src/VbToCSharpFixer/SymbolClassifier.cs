@@ -10,6 +10,9 @@ public sealed record SymbolClassification(ExpressionMeaning Meaning, ISymbol? Sy
 public sealed class SymbolClassifier
 {
     /// <summary>VBの呼び出し式をメソッド、配列、Indexerまたは未解決として分類します。</summary>
+    /// <param name="node">変換または記録の対象となる構文ノード。</param>
+    /// <param name="model">構文木に対応する意味モデル。</param>
+    /// <returns>呼び出し式の意味と解決済みシンボルを含む分類結果。</returns>
     public SymbolClassification ClassifyInvocation(InvocationExpressionSyntax node, SemanticModel model)
     {
         var info = model.GetSymbolInfo(node);
@@ -26,8 +29,8 @@ public sealed class SymbolClassifier
         if (expressionType is IArrayTypeSymbol array)
             return new(ExpressionMeaning.Array, null, array.ElementType, "Invocation target resolved as IArrayTypeSymbol");
 
-        // VB may bind an omitted default property through the invocation operation rather
-        // than directly exposing it from GetSymbolInfo on malformed/migrated source.
+        // 移行途中などの不完全なVBでは、省略された既定プロパティが呼び出し全体ではなく
+        // 呼び出し対象側にだけ結び付く場合があるため、対象式のシンボルも確認する。
         var type = model.GetTypeInfo(node).Type;
         var memberInfo = model.GetSymbolInfo(node.Expression);
         if (memberInfo.Symbol is IPropertySymbol memberProperty)
@@ -36,6 +39,9 @@ public sealed class SymbolClassifier
     }
 
     /// <summary>一般のVB式がメソッド、プロパティまたは値のどれに解決されるか分類します。</summary>
+    /// <param name="node">変換または記録の対象となる構文ノード。</param>
+    /// <param name="model">構文木に対応する意味モデル。</param>
+    /// <returns>式の意味と解決済みシンボルを含む分類結果。</returns>
     public SymbolClassification ClassifyExpression(ExpressionSyntax node, SemanticModel model)
     {
         var info = model.GetSymbolInfo(node);
@@ -51,6 +57,8 @@ public sealed class SymbolClassifier
     }
 
     /// <summary>Defaultの意味情報からIndexerを判定します。引数付きの通常プロパティとは区別します。</summary>
+    /// <param name="property">処理対象のプロパティ。</param>
+    /// <returns>プロパティの種類を表す分類結果。</returns>
     private static SymbolClassification ClassifyProperty(IPropertySymbol property)
     {
         var isIndexer = property.IsIndexer;

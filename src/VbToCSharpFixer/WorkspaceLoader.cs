@@ -11,11 +11,17 @@ public sealed class WorkspaceLoader : IDisposable
     public List<string> Diagnostics { get; } = [];
 
     /// <summary>指定されたMSBuildワークスペースを保持するローダーを初期化します。</summary>
+    /// <param name="workspace">保持するMSBuildWorkspace。不要な場合はnull。</param>
     private WorkspaceLoader(MSBuildWorkspace? workspace) => _workspace = workspace;
 
     /// <summary>CLIオプションに応じてSolution、Project、FolderまたはFileを読み込み、VB Compilationを構築します。</summary>
+    /// <param name="options">変換処理に使用するコマンドラインオプション。</param>
+    /// <param name="cancellationToken">処理のキャンセル要求を通知するトークン。</param>
+    /// <returns>読み込みに使用したローダーと、コンパイル済みVBプロジェクトの一覧を含むタスク。</returns>
     public static async Task<(WorkspaceLoader Loader, IReadOnlyList<LoadedProject> Projects)> LoadAsync(Options options, CancellationToken cancellationToken = default)
     {
+        // Solution／Project入力ではMSBuildWorkspaceを使い、参照、Imports、Defineなど
+        // 実際のプロジェクト設定を含むCompilationを取得する。
         if (options.Solution is not null || options.Project is not null)
         {
             if (!MSBuildLocator.IsRegistered)
@@ -36,6 +42,8 @@ public sealed class WorkspaceLoader : IDisposable
             return (loader, await CompileVisualBasicProjects(projects, cancellationToken));
         }
 
+        // Folder／File入力にはプロジェクト設定がないため、実行環境の参照だけを持つ
+        // AdhocWorkspaceを構築して、同じ変換パイプラインへ渡す。
         var files = options.Folder is not null
             ? Directory.EnumerateFiles(options.Folder, "*.vb", SearchOption.AllDirectories)
             : [options.File!];
@@ -55,6 +63,8 @@ public sealed class WorkspaceLoader : IDisposable
     }
 
     /// <summary>ルートプロジェクトから到達できるProjectReferenceを再帰的に列挙します。</summary>
+    /// <param name="root">処理対象のXMLルート要素。</param>
+    /// <returns>ルートから参照可能なプロジェクトの一覧。</returns>
     private static IReadOnlyList<Project> ReferencedProjectClosure(Project root)
     {
         var result = new List<Project>();
@@ -106,6 +116,8 @@ public sealed class WorkspaceLoader : IDisposable
     }
 
     /// <summary>SDKディレクトリ名から比較可能なバージョンを取得します。</summary>
+    /// <param name="value">処理対象の値。</param>
+    /// <returns>比較可能なSDKバージョン。解析できない場合は0.0。</returns>
     private static Version ParseSdkVersion(string value)
     {
         var numeric = value.Split('-', 2)[0];
@@ -113,6 +125,9 @@ public sealed class WorkspaceLoader : IDisposable
     }
 
     /// <summary>VBプロジェクトに限定してCompilationを非同期に生成します。</summary>
+    /// <param name="projects">処理対象のプロジェクト一覧。</param>
+    /// <param name="ct">処理のキャンセル要求を通知するトークン。</param>
+    /// <returns>コンパイル済みVBプロジェクトの一覧を含むタスク。</returns>
     private static async Task<IReadOnlyList<LoadedProject>> CompileVisualBasicProjects(IEnumerable<Project> projects, CancellationToken ct)
     {
         var result = new List<LoadedProject>();
@@ -125,6 +140,7 @@ public sealed class WorkspaceLoader : IDisposable
     }
 
     /// <summary>単一ファイル／フォルダ解析で利用する実行環境の参照アセンブリを列挙します。</summary>
+    /// <returns>実行環境の各アセンブリを表すメタデータ参照。</returns>
     private static IEnumerable<MetadataReference> PlatformReferences() =>
         ((string?)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES"))!
             .Split(Path.PathSeparator).Select(path => MetadataReference.CreateFromFile(path));
