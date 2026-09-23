@@ -20,11 +20,11 @@ internal static class ProjectFileOperations
     /// <returns>実際のコピー先と操作ログを含むタスク。</returns>
     internal static async Task<string?> CopyItemAsync(Project project, string projectDirectory, OutputLayout layout,
         string include, string itemType, Options options, List<FileCopyLogEntry> files,
-        List<ManualReviewItem> reviews, CancellationToken ct, string? link = null)
+        List<ManualReviewItem> reviews, CancellationToken ct, string? link = null, string? linkedDestination = null)
     {
         var source = Path.GetFullPath(Path.Combine(projectDirectory, include));
         var relativeDestination = link ?? include;
-        var destination = layout.PathInProject(project, relativeDestination);
+        var destination = linkedDestination ?? layout.PathInProject(project, relativeDestination);
         // 後続項目の存在確認を先取りしない。直前のコピーや外部の更新を反映した状態で判断する。
         // dry-runではコピーを行わないため、先行項目の出力を実在するものとして扱わない。
         if (!File.Exists(source))
@@ -39,7 +39,8 @@ internal static class ProjectFileOperations
             reviews.Add(Review(project.Name, source, ReasonCode.InvalidRelativePath, $"Unsafe output path: {destination}"));
             return null;
         }
-        if (!options.DryRun)
+        if (!options.DryRun && !files.Any(f => f.Result == "Copied" &&
+            f.SourcePath.Equals(source, StringComparison.OrdinalIgnoreCase) && f.DestinationPath.Equals(destination, StringComparison.OrdinalIgnoreCase)))
         {
             Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
             await using var input = File.OpenRead(source);

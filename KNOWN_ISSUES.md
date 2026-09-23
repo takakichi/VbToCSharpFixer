@@ -120,7 +120,9 @@ Project XMLの指定自体は維持しますが、Wildcard展開による全フ�
 
 ## 12. Project外リンクと外部DLL
 
-Project外のリンクファイルやHintPath DLLは出力ルート内の安全な場所へコピーし、Include／HintPathを更新します。VB CompileのLink項目は、Projectごとの論理パスへC#として個別出力し、同じフォルダーへ配置したresxのDependentUponを検証します。外部ファイルをコピーした事実は`ExternalLinkedFile`としてレビュー記録される場合があります。
+リンクファイルは出力側の共有先へ配置し、各ProjectのLinkを保持してIncludeを更新します。HintPath DLLは従来どおり出力ルート内へコピーします。resxのDependentUponはLinkによる論理配置で検証します。外部ファイルをコピーした事実は`ExternalLinkedFile`としてレビュー記録される場合があります。
+
+共有VBソースの変換結果がProject間で異なる場合は`LinkedSourceConflict`と比較レポートを出力し、共有先には`#error`を置きます。条件付きコンパイル・RootNamespace・参照先などの差分を確認してから共有C#を調整する必要があります。自動でDLL参照へ置き換えることはしません。
 
 参照ファイルが存在しない場合は`MissingReference`または`MissingContentFile`になります。
 

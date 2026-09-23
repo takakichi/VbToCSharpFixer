@@ -15,6 +15,7 @@ internal sealed class ConversionRunner
             reviews.AddRange(materialization.ManualReviews);
             var layout = new OutputLayout(options);
             var projectConverter = new ProjectSourceConverter();
+            await projectConverter.PrepareSharedAsync(projects, materialization, options, reviews);
             var projectOperations = materialization.ProjectOperations.ToList();
             var fileCount = 0;
             foreach (var loaded in projects)

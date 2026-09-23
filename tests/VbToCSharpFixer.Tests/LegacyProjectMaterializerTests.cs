@@ -174,11 +174,10 @@ public sealed class LegacyProjectMaterializerTests
         }
         else
         {
-            Assert.That(File.ReadAllBytes(Path.Combine(projectOutput, "copied.bin")),
-                Is.EqualTo(File.ReadAllBytes(Path.Combine(projectDirectory, firstSource))));
             var generatedXml = XDocument.Load(Path.Combine(projectOutput, "LegacyApp.csproj"));
-            Assert.That(generatedXml.Descendants("Content").Last().Attribute("Include")?.Value, Is.EqualTo("copied.bin"));
-            Assert.That(generatedXml.Descendants("Link"), Is.Empty);
+            var linkedPath = Path.GetFullPath(Path.Combine(projectOutput, generatedXml.Descendants("Content").Last().Attribute("Include")!.Value));
+            Assert.That(File.ReadAllBytes(linkedPath), Is.EqualTo(File.ReadAllBytes(Path.Combine(projectDirectory, firstSource))));
+            Assert.That(generatedXml.Descendants("Link").Single().Value, Is.EqualTo("copied.bin"));
         }
     }
 
@@ -204,9 +203,9 @@ public sealed class LegacyProjectMaterializerTests
         });
     }
 
-    /// <summary>複数ProjectからLinkされたForm一式を各Projectの論理パスへ分離して関連付けます。</summary>
+    /// <summary>複数ProjectからLinkされたForm一式を共有し、論理的な親子関係を保持します。</summary>
     [Test]
-    public async Task Materializes_linked_forms_per_project_and_preserves_resource_parent()
+    public async Task Preserves_linked_forms_and_shared_resource_parent()
     {
         var shared = Path.Combine(_root, "Shared");
         Directory.CreateDirectory(shared);
@@ -230,7 +229,7 @@ EndGlobal
 
         foreach (var loaded in new[] { first, second })
         {
-            var projectOutput = Path.Combine(output, "converted", "Linked", loaded.Project.Name, "Forms");
+            var projectOutput = Path.Combine(output, "converted", "Linked", "Shared");
             var projectFile = Path.Combine(output, "converted", "Linked", loaded.Project.Name, loaded.Project.Name + ".csproj");
             var xml = XDocument.Load(projectFile);
             var compile = xml.Descendants().Where(x => x.Name.LocalName == "Compile")
@@ -238,17 +237,19 @@ EndGlobal
             var resource = xml.Descendants().Single(x => x.Name.LocalName == "EmbeddedResource");
             Assert.Multiple(() =>
             {
-                Assert.That(compile, Does.Contain("Forms\\SharedForm.cs"));
-                Assert.That(compile, Does.Contain("Forms\\SharedForm.Designer.cs"));
-                Assert.That(resource.Attribute("Include")?.Value, Is.EqualTo("Forms\\SharedForm.resx"));
+                Assert.That(compile, Does.Contain("..\\Shared\\SharedForm.cs"));
+                Assert.That(compile, Does.Contain("..\\Shared\\SharedForm.Designer.cs"));
+                Assert.That(resource.Attribute("Include")?.Value, Is.EqualTo("..\\Shared\\SharedForm.resx"));
                 Assert.That(resource.Elements().Single(x => x.Name.LocalName == "DependentUpon").Value, Is.EqualTo("SharedForm.cs"));
-                Assert.That(xml.Descendants().Any(x => x.Name.LocalName == "Link"), Is.False);
+                Assert.That(xml.Descendants().Where(x => x.Name.LocalName == "Link").Select(x => x.Value),
+                    Is.EquivalentTo(new[] { "Forms\\SharedForm.cs", "Forms\\SharedForm.Designer.cs", "Forms\\SharedForm.resx" }));
                 Assert.That(File.Exists(Path.Combine(projectOutput, "SharedForm.resx")), Is.True);
                 Assert.That(result.SourceOutputPaths.Values, Does.Contain(Path.Combine(projectOutput, "SharedForm.cs")));
                 Assert.That(result.SourceOutputPaths.Values, Does.Contain(Path.Combine(projectOutput, "SharedForm.Designer.cs")));
             });
         }
         Assert.That(result.ManualReviews.Any(x => x.ReasonCode == ReasonCode.ResourceParentMismatch), Is.False);
+        Assert.That(result.SourceOutputPaths.Values.Distinct(StringComparer.OrdinalIgnoreCase).Count(), Is.EqualTo(2));
     }
 
     /// <summary>テスト用VBプロジェクトからRoslyn Compilationを構築します。</summary>

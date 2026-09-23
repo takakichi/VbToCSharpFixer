@@ -28,7 +28,7 @@ internal static class ProjectConverter
         IReadOnlyDictionary<string, string> projectOutputs,
         Dictionary<DocumentId, string> sourceOutputs,
         List<FileCopyLogEntry> files, List<ProjectConversionLogEntry> changes,
-        List<ManualReviewItem> reviews, CancellationToken ct)
+        List<ManualReviewItem> reviews, CancellationToken ct, LinkedFileLayout linkedLayout)
     {
         var sourceProject = project.FilePath!;
         var projectDirectory = Path.GetDirectoryName(sourceProject)!;
@@ -109,11 +109,17 @@ internal static class ProjectConverter
             var originalInclude = include;
             var linkElement = item.Elements().FirstOrDefault(x => x.Name.LocalName == "Link");
             var link = linkElement?.Value;
+            var linkedDestination = linkElement is null ? null : linkedLayout.Destination(Path.Combine(projectDirectory, originalInclude));
             var isVisualBasicSource = Path.GetExtension(include).Equals(".vb", StringComparison.OrdinalIgnoreCase);
             if (isVisualBasicSource)
                 include = Path.ChangeExtension(link ?? include, ".cs");
             include = MapProjectPath(include);
             item.Attribute("Include")!.Value = include;
+            if (linkedDestination is not null)
+            {
+                item.Attribute("Include")!.Value = Path.GetRelativePath(Path.GetDirectoryName(destinationProject)!, linkedDestination);
+                if (isVisualBasicSource) linkElement!.Value = Path.ChangeExtension(link!, ".cs");
+            }
             foreach (var metadata in item.Elements().Where(x => x.Name.LocalName is "DependentUpon" or "LastGenOutput"))
             {
                 if (Path.GetExtension(metadata.Value).Equals(".vb", StringComparison.OrdinalIgnoreCase))
@@ -127,18 +133,16 @@ internal static class ProjectConverter
 
             if (isVisualBasicSource)
             {
-                var destination = layout.PathInProject(project, include);
+                var destination = linkedDestination ?? layout.PathInProject(project, include);
                 MapSourceDocument(project, projectDirectory, originalInclude, link, destination,
                     sourceOutputs, plannedOutputs, reviews);
-                linkElement?.Remove();
             }
             else
             {
-                var copied = await ProjectFileOperations.CopyItemAsync(project, projectDirectory, layout, originalInclude, itemType, options, files, reviews, ct, link);
+                var copied = await ProjectFileOperations.CopyItemAsync(project, projectDirectory, layout, originalInclude, itemType, options, files, reviews, ct, link, linkedDestination);
                 if (copied is not null)
                 {
                     item.Attribute("Include")!.Value = Path.GetRelativePath(Path.GetDirectoryName(destinationProject)!, copied);
-                    linkElement?.Remove();
                 }
             }
         }
@@ -216,8 +220,9 @@ internal static class ProjectConverter
         XElement root, IReadOnlyDictionary<DocumentId, string> sourceOutputs, List<ManualReviewItem> reviews)
     {
         var compilePaths = root.Descendants().Where(x => x.Name.LocalName == "Compile")
-            .Select(x => x.Attribute("Include")?.Value).Where(x => !string.IsNullOrWhiteSpace(x))
-            .Select(x => NormalizeProjectPath(x!)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            .Where(x => !string.IsNullOrWhiteSpace(x.Attribute("Include")?.Value))
+            .ToLookup(x => NormalizeProjectPath(x.Elements().FirstOrDefault(e => e.Name.LocalName == "Link")?.Value ?? x.Attribute("Include")!.Value),
+                x => x.Attribute("Include")!.Value, StringComparer.OrdinalIgnoreCase);
         var plannedPaths = sourceOutputs.Where(x => project.GetDocument(x.Key) is not null).Select(x => Path.GetFullPath(x.Value))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var projectOutput = Path.GetDirectoryName(destinationProject)!;
@@ -226,10 +231,12 @@ internal static class ProjectConverter
             var include = resource.Attribute("Include")?.Value;
             var dependentUpon = resource.Elements().FirstOrDefault(x => x.Name.LocalName == "DependentUpon")?.Value;
             if (string.IsNullOrWhiteSpace(include) || string.IsNullOrWhiteSpace(dependentUpon)) continue;
-            var directory = Path.GetDirectoryName(include) ?? "";
+            // DependentUponは実ファイルの配置ではなく、Linkを含むプロジェクト上の論理配置に対する名前。
+            var logical = resource.Elements().FirstOrDefault(x => x.Name.LocalName == "Link")?.Value ?? include;
+            var directory = Path.GetDirectoryName(logical) ?? "";
             var parent = NormalizeProjectPath(Path.Combine(directory, dependentUpon));
-            var parentPath = Path.GetFullPath(Path.Combine(projectOutput, parent));
-            if (!compilePaths.Contains(parent) || !plannedPaths.Contains(parentPath) && !File.Exists(parentPath))
+            if (!compilePaths[parent].Any(path =>
+                plannedPaths.Contains(Path.GetFullPath(Path.Combine(projectOutput, path))) || File.Exists(Path.Combine(projectOutput, path))))
                 reviews.Add(Review(project.Name, sourceProject, ReasonCode.ResourceParentMismatch,
                     $"EmbeddedResource parent does not match a generated Compile item: {include} -> {parent}"));
         }

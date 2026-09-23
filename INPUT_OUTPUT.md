@@ -33,7 +33,7 @@ VbToCSharpFixer.exe `
 
 ProjectReference先のVBプロジェクトも再帰的に出力されます。
 
-複数ProjectからLinkされているVBソースとresxは、各Projectの`Link`論理パスへ個別に出力されます。
+複数ProjectからLinkされているVBソースとresxは、出力側の共有先へ配置します。各Projectの`Link`を保持し、`Include`を共有先への相対パスへ更新します。VBソースの拡張子は`.cs`へ変更します。
 
 ### dry-run
 
@@ -105,15 +105,19 @@ C:\Converted\
 └─ summary.txt
 ```
 
-リンクされたFormは、各Project内で次のように親子関係を維持します。
+リンクされたFormは、出力側の共有先に一式を配置します。各Projectでは`Link`と`DependentUpon`により表示上の親子関係を維持します。
 
 ```text
-Project\Forms\SharedForm.cs
-Project\Forms\SharedForm.Designer.cs
-Project\Forms\SharedForm.resx
+Shared\SharedForm.cs
+Shared\SharedForm.Designer.cs
+Shared\SharedForm.resx
 ```
 
 Project入力では主Projectを`converted/<Project名>`へ出力し、参照Projectは`converted`直下の兄弟ディレクトリへ出力します。
+
+リンク元が変換対象Project内にある場合は、そのProjectの出力先を共有します。ソリューション内の共有フォルダーは相対配置を維持し、範囲外のリンク元は`converted/_linked/<元フォルダーのハッシュ>`へ配置します。元の入力ファイルは変更しません。
+
+共有ソースは各Projectの条件で変換して比較します。結果が異なる場合は`LinkedSourceConflict`を記録し、`logs/linked-conflicts/*.txt`へProject別の結果を保存します。共有先には`#error`を出力し、片方の結果を黙って採用・上書きしません。dry-runでは差分検出のみ行い、比較レポートと共有ファイルを書き込みません。
 
 ## 5. ログ
 

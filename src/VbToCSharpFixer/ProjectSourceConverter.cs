@@ -8,6 +8,48 @@ internal sealed class ProjectSourceConverter
     private readonly VbToCSharpConverter _converter = new();
     private readonly ValidationService _validation = new();
     private readonly VisualBasicRuntimeReferenceService _runtimeReferences = new();
+    private readonly Dictionary<DocumentId, ConversionResult> _sharedResults = new();
+    private readonly HashSet<string> _written = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>共有先へ書き込む前に全プロジェクトの変換結果を比較し、後勝ちの上書きを防ぎます。</summary>
+    internal async Task PrepareSharedAsync(IReadOnlyList<LoadedProject> projects, MaterializationResult materialization,
+        Options options, List<ManualReviewItem> reviews)
+    {
+        foreach (var group in materialization.SourceOutputPaths.GroupBy(p => p.Value, StringComparer.OrdinalIgnoreCase).Where(g => g.Count() > 1))
+        {
+            var candidates = new List<(Document Document, ConversionResult Result)>();
+            foreach (var entry in group)
+            {
+                var loaded = projects.Single(p => p.Project.Id == entry.Key.ProjectId);
+                var document = loaded.Project.GetDocument(entry.Key)!;
+                var tree = await document.GetSyntaxTreeAsync();
+                if (tree is null) continue;
+                var rootNamespace = (loaded.Compilation.Options as Microsoft.CodeAnalysis.VisualBasic.VisualBasicCompilationOptions)?.RootNamespace;
+                var result = _converter.Convert(tree, loaded.Compilation.GetSemanticModel(tree, true), loaded.Project.Name, rootNamespace);
+                candidates.Add((document, result));
+                _sharedResults[document.Id] = result;
+            }
+            if (candidates.Select(c => c.Result.CSharp).Distinct(StringComparer.Ordinal).Count() <= 1) continue;
+            var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(group.Key)));
+            var report = Path.Combine(options.Output, "logs", "linked-conflicts", hash + ".txt");
+            if (!options.DryRun)
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(report)!);
+                await File.WriteAllTextAsync(report, string.Join("\n\n", candidates.Select(c =>
+                    $"===== Project: {c.Document.Project.Name}; Source: {c.Document.FilePath} =====\n{c.Result.CSharp}")));
+            }
+            foreach (var candidate in candidates)
+            {
+                reviews.Add(new(candidate.Document.Project.Name, candidate.Document.FilePath ?? "", 0, 0, "",
+                    ReasonCode.LinkedSourceConflict, $"Shared conversion results differ: {group.Key}. Comparison report: {report}"));
+                // 片方を正しいものとして採用しない。共有構成を保ったままビルドで問題を明示する。
+                _sharedResults[candidate.Document.Id] = candidate.Result with
+                {
+                    CSharp = "#error LinkedSourceConflict: See logs/linked-conflicts for project-specific conversion results.\n"
+                };
+            }
+        }
+    }
 
     /// <summary>プロジェクト内のVB文書を変換し、生成コードをプロジェクト単位で検証します。</summary>
     /// <param name="loaded">読み込み済みのVBプロジェクト。</param>
@@ -73,7 +115,8 @@ internal sealed class ProjectSourceConverter
         if (tree is null) return null;
         var model = loaded.Compilation.GetSemanticModel(tree, ignoreAccessibility: true);
         var rootNamespace = (loaded.Compilation.Options as Microsoft.CodeAnalysis.VisualBasic.VisualBasicCompilationOptions)?.RootNamespace;
-        var result = _converter.Convert(tree, model, loaded.Project.Name, rootNamespace);
+        var result = _sharedResults.TryGetValue(document.Id, out var sharedResult)
+            ? sharedResult : _converter.Convert(tree, model, loaded.Project.Name, rootNamespace);
         var destination = materialization.SourceOutputPaths.TryGetValue(document.Id, out var mappedDestination)
             ? mappedDestination
             : document.FilePath is null
@@ -93,7 +136,8 @@ internal sealed class ProjectSourceConverter
             // 従来の動作に合わせ、単体の構文診断は保存時に記録する。
             // プロジェクト単位のCompilation検証はdry-runでも実行する。
             Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
-            await File.WriteAllTextAsync(destination, result.CSharp);
+            if (_written.Add(Path.GetFullPath(destination)))
+                await File.WriteAllTextAsync(destination, result.CSharp);
             foreach (var diagnostic in _validation.ValidateSyntax(result.CSharp, destination))
             {
                 var p = diagnostic.Location.GetLineSpan().StartLinePosition;

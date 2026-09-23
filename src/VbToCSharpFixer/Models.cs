@@ -11,7 +11,7 @@ public enum ReasonCode
     UnsupportedApplicationFramework, StartupObjectUnresolved, ResourceGeneratorConversionFailure,
     ExternalLinkedFile, OutputPathCollision, InvalidRelativePath, ProjectConversionFailure,
     SolutionConversionFailure, GeneratedProjectBuildFailure, WildcardProjectItem,
-    ResourceParentMismatch
+    ResourceParentMismatch, LinkedSourceConflict
 }
 
 public sealed record FixResult(

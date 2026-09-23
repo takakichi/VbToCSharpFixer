@@ -21,6 +21,7 @@ public sealed class LegacyProjectMaterializer
         var changes = new List<ProjectConversionLogEntry>();
         var reviews = new List<ManualReviewItem>();
         var sourceOutputs = new Dictionary<DocumentId, string>();
+        var linkedLayout = new LinkedFileLayout(options, layout, projects);
         var directories = projects.ToDictionary(x => x.Project.Id, x => layout.ProjectDirectory(x.Project));
         var projectOutputs = projects.Where(x => x.Project.FilePath is not null).ToDictionary(
             x => Path.GetFullPath(x.Project.FilePath!),
@@ -34,7 +35,7 @@ public sealed class LegacyProjectMaterializer
         {
             if (loaded.Project.FilePath is null) continue;
             await ProjectConverter.ConvertAsync(options, layout, loaded.Project, projectOutputs,
-                sourceOutputs, files, changes, reviews, cancellationToken);
+                sourceOutputs, files, changes, reviews, cancellationToken, linkedLayout);
         }
 
         var buildTarget = options.Solution is not null
